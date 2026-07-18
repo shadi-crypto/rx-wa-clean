@@ -1,19 +1,16 @@
 {
-  "name": "rx-clean",
-  "version": "1.0.0",
-  "description": "",
+  "name": "rx-inbox",
+  "version": "2.0.0",
+  "description": "RX WA v2.0 — multi-tenant WhatsApp platform: bot + per-client inbox + staff login + email alerts",
   "main": "server.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "axios": "^1.18.1",
+    "bcryptjs": "^2.4.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "fuse.js": "^7.5.0"
+    "express-session": "^1.18.1",
+    "fuse.js": "^7.5.0",
+    "nodemailer": "^6.10.1"
   }
 }

@@ -2,7 +2,7 @@ services:
   - type: web
     name: rx-wa
     runtime: docker
-    plan: free            # free sleeps when idle; switch to 'starter' ($7/mo) before selling
+    plan: free
     branch: main
     healthCheckPath: /health
     envVars:
@@ -14,9 +14,17 @@ services:
         value: v19.0
       - key: ADMIN_PASSWORD
         value: RxWa@2026!Admin
+      - key: SESSION_SECRET
+        sync: false
       - key: META_APP_SECRET
         sync: false
       - key: HALAT_PHONE_ID
         sync: false
       - key: HALAT_WA_TOKEN
         sync: false
+      - key: ALERT_EMAIL
+        sync: false
+      - key: ALERT_EMAIL_PASS
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        value: rx-wa.onrender.com
