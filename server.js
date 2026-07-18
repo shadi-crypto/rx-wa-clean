@@ -1,6 +1,6 @@
-// RX WA v2.0 — multi-tenant WhatsApp platform with Inbox + Login + Email alerts
+// RX WA v2.1 — multi-tenant WhatsApp platform with Inbox + Login + Email alerts + in-page notifications
 // Official Meta Cloud API (zero ban risk). Self-hosted, no SaaS subscription.
-// LLM-free reply engine (local JSON store + fuse.js). Per-client login + staff inbox + email alert.
+// LLM-free reply engine (local JSON store + fuse.js). Per-client login + staff inbox + email alert + live toast.
 
 const express = require('express');
 const axios = require('axios');
@@ -28,12 +28,13 @@ const DB_FILE = path.join(DATA_DIR, 'store.json');
 
 function load() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
-  catch (e) { return { clients: [], qa: [], messages: [], flows: {}, misses: {}, users: [] }; }
+  catch (e) { return { clients: [], qa: [], messages: [], flows: {}, misses: {}, users: [], staffRequests: {} }; }
 }
 function save(d) { try { fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2)); } catch (e) {} }
 let _db = load();
 
 function boot() {
+  if (!_db.staffRequests) _db.staffRequests = {};
   if (!_db.clients.find(c => c.id === 'halat')) {
     _db.clients.push({ id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.ALERT_EMAIL || '' });
   }
@@ -44,7 +45,6 @@ function boot() {
       console.log(`[BOOT] زرع ${_db.qa.length} سؤال من qa.json ✅`);
     } catch (e) { console.log('[BOOT] تعذّر زرع qa:', e.message); }
   }
-  // default owner user (admin) — password = ADMIN_PASSWORD (hashed)
   if (!_db.users.find(u => u.username === 'admin')) {
     _db.users.push({ username: 'admin', client_id: 'halat', password: bcrypt.hashSync(ADMIN_PASSWORD, 10), role: 'owner', email: process.env.ALERT_EMAIL || '' });
   }
@@ -53,7 +53,6 @@ function boot() {
 }
 boot();
 
-// ---------- session ----------
 app.use(session({
   secret: process.env.SESSION_SECRET || 'RxWaSession2026',
   resave: false, saveUninitialized: false,
@@ -64,10 +63,6 @@ const requireLogin = (req, res, next) => {
   if (req.session && req.session.user) return next();
   return res.status(401).send('🔒 سجّل الدخول');
 };
-const requireOwnerOf = (clientId) => (req, res, next) => {
-  if (req.session.user && (req.session.user.role === 'owner' || req.session.user.client_id === clientId)) return next();
-  return res.status(403).send('🔒 غير مصرح');
-};
 
 const getClientByPhone = (phoneId) => _db.clients.find(c => c.phone_id === phoneId) || null;
 const logMsg = (cid, from, dir, text) => {
@@ -76,15 +71,11 @@ const logMsg = (cid, from, dir, text) => {
   save(_db);
 };
 
-// ---------- email alert ----------
 let _mailer = null;
 function mailer() {
   if (_mailer) return _mailer;
   if (!process.env.ALERT_EMAIL || !process.env.ALERT_EMAIL_PASS) return null;
-  _mailer = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: process.env.ALERT_EMAIL, pass: process.env.ALERT_EMAIL_PASS }
-  });
+  _mailer = nodemailer.createTransport({ service: 'gmail', auth: { user: process.env.ALERT_EMAIL, pass: process.env.ALERT_EMAIL_PASS } });
   return _mailer;
 }
 async function alertStaff(client, from, text) {
@@ -97,13 +88,12 @@ async function alertStaff(client, from, text) {
       from: process.env.ALERT_EMAIL,
       to,
       subject: `🔔 طلب تواصل مع موظف — ${client.name}`,
-      text: `عميل طلب التواصل مع موظف.\n\nرقم العميل: ${from}\nرسالته: ${text}\n\nرد عليه من لوحة التحكم:\nhttps://${process.env.RENDER_EXTERNAL_URL || 'rx-wa-yn2j.onrender.com'}/inbox`
+      text: `عميل طلب التواصل مع موظف.\n\nرقم العميل: ${from}\nرسالته: ${text}\n\nرد عليه من لوحة التحكم:\nhttps://${process.env.RENDER_EXTERNAL_URL || 'rx-wa.onrender.com'}/inbox`
     });
     console.log('[EMAIL] أرسل تنبيه إلى', to);
   } catch (e) { console.error('[EMAIL] خطأ:', e.message); }
 }
 
-// ---------- reply engine ----------
 function findReply(client, text) {
   const rows = _db.qa.filter(q => q.client_id === client.id);
   if (!rows.length) return null;
@@ -118,14 +108,12 @@ function findReply(client, text) {
   return null;
 }
 
-// ---------- webhook verify ----------
 app.get('/webhook', (req, res) => {
   const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
   if (mode === 'subscribe' && token === VERIFY_TOKEN) return res.status(200).send(challenge);
   res.sendStatus(403);
 });
 
-// ---------- receive ----------
 app.post('/webhook', (req, res) => {
   if (APP_SECRET) {
     const sig = req.headers['x-hub-signature-256'];
@@ -155,7 +143,6 @@ app.post('/webhook', (req, res) => {
   })();
 });
 
-// ---------- send ----------
 async function sendText(client, to, text) {
   logMsg(client.id, to, 'out', text);
   if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) {
@@ -168,7 +155,6 @@ async function sendText(client, to, text) {
   } catch (e) { console.error('send error:', e.response && e.response.data || e.message); }
 }
 
-// ---------- reply logic ----------
 async function handleMessage(client, from, text, hasImage) {
   console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"`);
   const lower = text.toLowerCase();
@@ -193,13 +179,12 @@ async function handleMessage(client, from, text, hasImage) {
     return sendText(client, from, `👋 أهلاً وسهلاً في *${client.name}*!\n\nاكتب سؤالك وسنرد عليك تلقائياً، أو اكتب "موظف" للتواصل مع أحد الفريق.`);
   }
   if (lower.includes('موظف') || lower.includes('اتصال')) {
-    delete _db.misses[from]; save(_db);
+    delete _db.misses[from]; _db.staffRequests[from] = true; save(_db);
     await alertStaff(client, from, text);
     return sendText(client, from, '🙋 فريقنا يتواصل معاك قريباً. أو تواصل على 966579591669.');
   }
   if (lower.includes('تالف') || lower.includes('كسر') || lower.includes('تلف') || lower.includes('ضرر') || lower.includes('مكسور')) {
-    _db.flows[from] = { step: 'await_order', order: '' }; save(_db);
-    delete _db.misses[from]; save(_db);
+    _db.flows[from] = { step: 'await_order', order: '' }; delete _db.misses[from]; save(_db);
     return sendText(client, from, '⚠️ نأسف للإزعاج! لرفع بلاغ تعويض، أرسل **رقم طلبك** (مثلاً #1234).');
   }
   const reply = findReply(client, text);
@@ -210,14 +195,13 @@ async function handleMessage(client, from, text, hasImage) {
   const miss = (_db.misses[from] || 0) + 1;
   _db.misses[from] = miss; save(_db);
   if (miss >= 3) {
-    delete _db.misses[from]; save(_db);
+    delete _db.misses[from]; _db.staffRequests[from] = true; save(_db);
     await alertStaff(client, from, text);
     return sendText(client, from, '🙋 يبدو أن سؤالك خارج نطاق المعرفة الحالية. تواصل مباشرة مع موظف هالات على 966579591669 أو info@Halat.sa وسيساعدونك فوراً.');
   }
   return sendText(client, from, '🤖 ما قدرت أفهم سؤالك. اكتب كلمات أوضح، أو "موظف" للتواصل المباشر.');
 }
 
-// ---------- auth routes ----------
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
   const user = _db.users.find(u => u.username === username);
@@ -227,7 +211,6 @@ app.post('/login', (req, res) => {
 });
 app.get('/logout', (req, res) => { req.session.destroy(() => res.redirect('/login')); });
 
-// ---------- inbox (per-client) ----------
 app.get('/login', (req, res) => res.send(loginHtml()));
 app.get('/inbox', requireLogin, (req, res) => res.send(inboxHtml(req.session.user)));
 
@@ -240,7 +223,8 @@ app.get('/api/conversations', requireLogin, (req, res) => {
     num,
     last: list[list.length - 1],
     count: list.length,
-    unread: list.filter(m => m.direction === 'in' && !m.read).length
+    unread: list.filter(m => m.direction === 'in' && !m.read).length,
+    staffRequested: !!_db.staffRequests[num]
   })).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
   res.json({ client: _db.clients.find(c => c.id === cid), conversations: convs });
 });
@@ -255,11 +239,11 @@ app.post('/api/reply', requireLogin, async (req, res) => {
   const client = _db.clients.find(c => c.id === cid);
   if (!client) return res.status(404).send('no client');
   const { num, text } = req.body;
+  delete _db.staffRequests[num]; save(_db);
   await sendText(client, num, text);
   res.json({ ok: true });
 });
 
-// ---------- admin (owner) ----------
 app.get('/admin', (req, res) => {
   const auth = req.headers['authorization'] || '';
   const expected = 'Basic ' + Buffer.from('admin:' + ADMIN_PASSWORD).toString('base64');
@@ -284,14 +268,15 @@ app.get('/admin/api/qa', (req, res) => {
   res.json({ count: _db.qa.length, clientIds: dist });
 });
 
-// ---------- HTML ----------
 function loginHtml() {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>RX WA — دخول</title>
-  <style>body{font-family:Tahoma,sans-serif;background:#FBF7F0;display:flex;height:100vh;align-items:center;justify-content:center}
-  .card{background:#fff;padding:30px;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.08);width:320px}
-  input{padding:10px;width:100%;margin:8px 0;border:1px solid #ECE3D5;border-radius:8px;box-sizing:border-box}
-  button{background:#25D366;color:#fff;border:0;padding:11px;width:100%;border-radius:8px;font-weight:700;cursor:pointer}</style></head>
-  <body><div class="card"><h2>RX WA 💬</h2>
+  <style>body{font-family:Tahoma,sans-serif;background:#075E54;display:flex;height:100vh;align-items:center;justify-content:center}
+  .card{background:#fff;padding:34px;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.25);width:330px;text-align:center}
+  .logo{font-size:40px;margin-bottom:6px}.card h2{margin:0 0 18px;color:#075E54}
+  input{padding:12px;width:100%;margin:8px 0;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;font-size:15px}
+  button{background:#25D366;color:#fff;border:0;padding:13px;width:100%;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}
+  button:hover{opacity:.92}</style></head>
+  <body><div class="card"><div class="logo">💬</div><h2>RX WA</h2>
   <form method="POST" action="/login"><input name="username" placeholder="اسم المستخدم" required>
   <input name="password" type="password" placeholder="كلمة السر" required>
   <button>دخول</button></form></div></body></html>`;
@@ -299,34 +284,50 @@ function loginHtml() {
 function inboxHtml(user) {
   const client = _db.clients.find(c => c.id === user.client_id);
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>Inbox — ${client ? client.name : ''}</title>
-  <style>body{font-family:Tahoma,sans-serif;background:#FBF7F0;margin:0}
-  header{background:#075E54;color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
-  .wrap{display:flex;height:calc(100vh - 54px)}
-  .list{width:300px;background:#fff;border-left:1px solid #eee;overflow:auto}
-  .conv{padding:12px;border-bottom:1px solid #f0f0f0;cursor:pointer}
-  .conv:hover{background:#f5f5f5}.conv b{color:#111}.conv .un{background:#25D366;color:#fff;border-radius:10px;padding:1px 7px;font-size:12px}
-  .chat{flex:1;display:flex;flex-direction:column}
+  <style>*{box-sizing:border-box}body{font-family:Tahoma,sans-serif;background:#ECE5DD;margin:0}
+  header{background:#075E54;color:#fff;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:5}
+  header .bell{background:#25D366;border-radius:20px;padding:3px 11px;font-size:13px;margin-left:8px}
+  header a{color:#fff;text-decoration:none;font-size:13px;opacity:.85}
+  .wrap{display:flex;height:calc(100vh - 50px)}
+  .list{width:310px;background:#fff;border-left:1px solid #ddd;overflow:auto}
+  .conv{padding:11px 14px;border-bottom:1px solid #f0f0f0;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .conv:hover{background:#f5f5f5}.conv.active{background:#e8f5e9}
+  .conv .num{font-weight:700;color:#111}.conv .prev{color:#666;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+  .badge{background:#25D366;color:#fff;border-radius:11px;padding:1px 7px;font-size:11px}
+  .staff{background:#FF9800;color:#fff;border-radius:11px;padding:1px 7px;font-size:11px}
+  .chat{flex:1;display:flex;flex-direction:column;background:#ECE5DD}
   .msgs{flex:1;padding:16px;overflow:auto}
-  .b{margin:6px 0;max-width:70%;padding:9px 13px;border-radius:12px;clear:both}
+  .b{margin:6px 0;max-width:72%;padding:8px 12px;border-radius:10px;clear:both;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
   .in{background:#fff;border:1px solid #eee;float:right}.out{background:#DCF8C6;float:left}
-  .box{padding:12px;border-top:1px solid #eee;display:flex;gap:8px}
-  .box input{flex:1;padding:10px;border:1px solid #ECE3D5;border-radius:8px}
-  .box button{background:#25D366;color:#fff;border:0;padding:10px 18px;border-radius:8px;cursor:pointer}</style></head>
-  <body><header><div>💬 RX WA — ${client ? client.name : ''}</div><a href="/logout" style="color:#fff">خروج</a></header>
+  .box{padding:10px 14px;background:#f0f0f0;display:flex;gap:8px}
+  .box input{flex:1;padding:11px;border:1px solid #ccc;border-radius:22px;outline:none;font-size:14px}
+  .box button{background:#075E54;color:#fff;border:0;padding:10px 22px;border-radius:22px;cursor:pointer;font-weight:700}
+  #toast{position:fixed;bottom:22px;left:22px;background:#222;color:#fff;padding:13px 19px;border-radius:10px;opacity:0;transition:.3s;z-index:99;font-size:14px}
+  #toast.show{opacity:.95}</style></head>
+  <body><header><div>💬 RX WA — ${client ? client.name : ''}</div><div><span class="bell" id="bell"></span><a href="/logout">خروج</a></div></header>
   <div class="wrap"><div class="list" id="list"></div>
-  <div class="chat"><div class="msgs" id="msgs"></div>
-  <div class="box"><input id="txt" placeholder="اكتب رداً..."><button onclick="send()">إرسال</button></div></div></div>
+  <div class="chat"><div class="msgs" id="msgs"><div style="color:#888;text-align:center;margin-top:40px">اختر محادثة من اليمين ←</div></div>
+  <div class="box"><input id="txt" placeholder="اكتب رداً..." onkeydown="if(event.key==='Enter')send()"><button onclick="send()">إرسال</button></div></div></div>
+  <div id="toast"></div>
   <script>
-  let cur='';
+  let cur=''; let lastTs=0;
+  function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},3500);}
   async function load(){const r=await fetch('/api/conversations');const d=await r.json();
-    document.getElementById('list').innerHTML=d.conversations.map(c=>'<div class="conv" onclick="open(\\''+c.num+'\\')"><b>'+c.num+'</b><div>'+c.last.text.slice(0,30)+'</div>'+(c.unread?'<span class="un">'+c.unread+'</span>':'')+'</div>').join('');}
-  async function open(num){cur=num;const r=await fetch('/api/messages/'+num);const d=await r.json();
-    document.getElementById('msgs').innerHTML=d.map(m=>'<div class="b '+m.direction+'">'+m.text+'</div>').join('');
-    load();}
+    let maxTs=lastTs;
+    d.conversations.forEach(function(c){const ts=new Date(c.last.at).getTime();if(ts>maxTs)maxTs=ts;if(c.last.direction==='in'&&ts>lastTs&&lastTs>0)toast('💬 رسالة جديدة من '+c.num);});
+    if(maxTs>lastTs)lastTs=maxTs;
+    const unread=d.conversations.reduce(function(s,c){return s+c.unread;},0);
+    const staff=d.conversations.filter(function(c){return c.staffRequested;}).length;
+    document.getElementById('bell').textContent=(unread?(' 📨'+unread):'')+(staff?(' 🔔'+staff):'');
+    document.getElementById('list').innerHTML=d.conversations.map(function(c){return '<div class=\"conv '+(c.num===cur?'active':'')+'\" onclick=\"openC(\\\''+c.num+'\\\')"><div><div class=\"num\">'+c.num+(c.staffRequested?' <span class=\"staff\">موظف</span>':'')+'</div><div class=\"prev\">'+c.last.text.slice(0,26)+'</div></div>'+(c.unread?'<span class=\"badge\">'+c.unread+'</span>':'')+'</div>';}).join('')||'<div style="padding:20px;color:#888">لا محادثات بعد</div>';
+  }
+  async function openC(num){cur=num;const r=await fetch('/api/messages/'+num);const d=await r.json();
+    document.getElementById('msgs').innerHTML=d.map(function(m){return '<div class=\"b '+m.direction+'\">'+m.text+'</div>';}).join('');
+    const ms=document.getElementById('msgs');ms.scrollTop=ms.scrollHeight;load();}
   async function send(){if(!cur)return;const t=document.getElementById('txt').value;if(!t)return;
     await fetch('/api/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({num:cur,text:t})});
-    document.getElementById('txt').value='';open(cur);}
-  load();setInterval(load,5000);
+    document.getElementById('txt').value='';openC(cur);}
+  load();setInterval(load,4000);
   </script></body></html>`;
 }
 function adminHtml() {
@@ -345,4 +346,4 @@ function adminHtml() {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 RX WA v2.0 شغّالة على ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 RX WA v2.1 شغّالة على ${PORT}`));
