@@ -133,9 +133,22 @@ app.post('/webhook', (req, res) => {
         for (const m of (value.messages || [])) {
           const from = m.from;
           const text = (m.text && m.text.body || '').trim();
-          const hasImage = !!(m.image || m.document || m.video);
-          logMsg(client.id, from, 'in', text || '[صورة]');
-          await handleMessage(client, from, text, hasImage);
+          const hasImage = !!(m.image || m.document || m.video || m.audio);
+          // media: store URL/id for inbox display
+          let mediaNote = '';
+          if (m.image) mediaNote = '[صورة]';
+          else if (m.video) mediaNote = '[فيديو]';
+          else if (m.document) mediaNote = '[ملف]';
+          else if (m.audio) mediaNote = '[صوت]';
+          // interactive button reply
+          let buttonId = null;
+          if (m.interactive && m.interactive.type === 'button_reply') {
+            buttonId = m.interactive.button_reply.id;
+            logMsg(client.id, from, 'in', '[زر] ' + (m.interactive.button_reply.title || buttonId));
+          } else {
+            logMsg(client.id, from, 'in', text || mediaNote);
+          }
+          await handleMessage(client, from, text, hasImage, buttonId);
         }
       }
     }
@@ -143,21 +156,78 @@ app.post('/webhook', (req, res) => {
   })();
 });
 
-async function sendText(client, to, text) {
+// 24h window: store last inbound time per conversation
+function markInbound(clientId, from) {
+  if (!_db.lastInbound) _db.lastInbound = {};
+  const k = clientId + ':' + from;
+  _db.lastInbound[k] = Date.now();
+  save(_db);
+}
+function within24h(clientId, from) {
+  if (!_db.lastInbound) return false;
+  const k = clientId + ':' + from;
+  const t = _db.lastInbound[k];
+  return t && (Date.now() - t) < 24 * 3600 * 1000;
+}
+
+async function sendText(client, to, text, opts) {
+  opts = opts || {};
+  // enforce 24h window unless explicitly a template
+  if (!opts.template && !within24h(client.id, to)) {
+    console.log(`[24h] خارج النافذة -> ${to} (استخدم قالب). تجاهل النص.`);
+    return { blocked24h: true };
+  }
   logMsg(client.id, to, 'out', text);
   if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) {
-    console.log(`[ROUTE] ${client.name} -> ${to}: ${text}`); return;
+    console.log(`[ROUTE] ${client.name} -> ${to}: ${text}`); return {};
   }
   const url = `https://graph.facebook.com/${API_VERSION}/${client.phone_id}/messages`;
   try {
     await axios.post(url, { messaging_product: 'whatsapp', to, type: 'text', text: { body: text } },
       { headers: { Authorization: `Bearer ${client.wa_token}` } });
-  } catch (e) { console.error('send error:', e.response && e.response.data || e.message); }
+    return {};
+  } catch (e) { console.error('send error:', e.response && e.response.data || e.message); return { error: e.message }; }
 }
 
-async function handleMessage(client, from, text, hasImage) {
-  console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"`);
-  const lower = text.toLowerCase();
+// send media (image/document/video/audio) via link
+async function sendMedia(client, to, type, urlOrId, caption) {
+  if (!within24h(client.id, to)) { console.log(`[24h] media خارج النافذة -> ${to}`); return { blocked24h: true }; }
+  logMsg(client.id, to, 'out', '[وسائط:' + type + ']');
+  if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) { console.log(`[ROUTE media] ${client.name} -> ${to}`); return {}; }
+  const url = `https://graph.facebook.com/${API_VERSION}/${client.phone_id}/messages`;
+  const obj = type === 'audio' ? { audio: { link: urlOrId } } : type === 'video' ? { video: { link: urlOrId, caption } } : type === 'document' ? { document: { link: urlOrId, caption, filename: 'file' } } : { image: { link: urlOrId, caption } };
+  try {
+    await axios.post(url, { messaging_product: 'whatsapp', to, type, ...obj }, { headers: { Authorization: `Bearer ${client.wa_token}` } });
+    return {};
+  } catch (e) { console.error('media send error:', e.response && e.response.data || e.message); return { error: e.message }; }
+}
+
+// send interactive buttons (max 3, title <=20 chars)
+async function sendButtons(client, to, body, buttons) {
+  if (!within24h(client.id, to)) { console.log(`[24h] buttons خارج النافذة -> ${to}`); return { blocked24h: true }; }
+  logMsg(client.id, to, 'out', '[أزرار] ' + body);
+  if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) { console.log(`[ROUTE buttons] ${client.name} -> ${to}: ${body}`); return {}; }
+  const url = `https://graph.facebook.com/${API_VERSION}/${client.phone_id}/messages`;
+  const payload = {
+    messaging_product: 'whatsapp', to, type: 'interactive',
+    interactive: { type: 'button', body: { text: body }, action: { buttons: buttons.slice(0, 3).map((b, i) => ({ type: 'reply', reply: { id: 'btn' + i, title: b.substring(0, 20) } })) } }
+  };
+  try {
+    await axios.post(url, payload, { headers: { Authorization: `Bearer ${client.wa_token}` } });
+    return {};
+  } catch (e) { console.error('buttons send error:', e.response && e.response.data || e.message); return { error: e.message }; }
+}
+
+async function handleMessage(client, from, text, hasImage, buttonId) {
+  markInbound(client.id, from);
+  console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"${hasImage ? ' [صورة]' : ''}${buttonId ? ' [زر:' + buttonId + ']' : ''}`);
+  const lower = (text || '').toLowerCase();
+  // button replies map to menu actions
+  if (buttonId) {
+    if (buttonId === 'btn0') return sendText(client, from, '🚚 مدة الشحن: الرياض 1-3 أيام، باقي المدن 3-5 أيام.');
+    if (buttonId === 'btn1') return sendText(client, from, '⚠️ لرفع بلاغ تلف أرسل رقم طلبك (مثلاً #1234).');
+    if (buttonId === 'btn2') { delete _db.misses[from]; _db.staffRequests[from] = true; save(_db); await alertStaff(client, from, text); return sendText(client, from, '🙋 فريقنا يتواصل معاك قريباً. أو تواصل على 966579591669.'); }
+  }
   const flow = _db.flows[from];
   if (flow && flow.step) {
     if (lower.includes('إلغاء') || lower.includes('موظف') || lower.includes('اتصال')) {
@@ -176,7 +246,7 @@ async function handleMessage(client, from, text, hasImage) {
   }
   if (!text || /^(مرحبا|السلام|قائمة|السلام عليكم|start)/.test(lower)) {
     delete _db.misses[from]; save(_db);
-    return sendText(client, from, `👋 أهلاً وسهلاً في *${client.name}*!\n\nاكتب سؤالك وسنرد عليك تلقائياً، أو اكتب "موظف" للتواصل مع أحد الفريق.`);
+    return sendButtons(client, from, `👋 أهلاً وسهلاً في *${client.name}*! اختر من القائمة:`, ['مدة الشحن', 'بلاغ تلف', 'موظف']);
   }
   if (lower.includes('موظف') || lower.includes('اتصال')) {
     delete _db.misses[from]; _db.staffRequests[from] = true; save(_db);
