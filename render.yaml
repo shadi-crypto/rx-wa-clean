@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: wasilah-wa
+    runtime: docker
+    plan: free            # free sleeps when idle; switch to 'starter' ($7/mo) before selling
+    branch: main
+    healthCheckPath: /health
+    envVars:
+      - key: VERIFY_TOKEN
+        value: RxWa@2026!SecureVerify
+      - key: PORT
+        value: 3000
+      - key: WA_API_VERSION
+        value: v19.0
+      - key: ADMIN_PASSWORD
+        value: RxWa@2026!Admin
+      - key: META_APP_SECRET
+        sync: false
+      - key: HALAT_PHONE_ID
+        sync: false
+      - key: HALAT_WA_TOKEN
+        sync: false
