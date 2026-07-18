@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: wasilah-wa
+    name: rx-wa
     runtime: docker
     plan: free            # free sleeps when idle; switch to 'starter' ($7/mo) before selling
     branch: main
