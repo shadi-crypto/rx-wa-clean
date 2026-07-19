@@ -18,14 +18,28 @@ app.use(express.json({ type: ['application/json', 'text/plain'] }));
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => { res.set('Content-Type', 'text/html; charset=utf-8'); next(); });
 
+// SECURITY (Vibe Security audit): no hardcoded fallback secrets in production.
+function reqEnv(name) {
+  const v = process.env[name];
+  if (!v) { console.error(`[SECURITY] متغير البيئة ${name} مفقود — يُرفض التشغيل`); process.exit(1); }
+  return v;
+}
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'RxWa@2026!SecureVerify';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'RxWa@2026!Admin';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'RxWaSession2026';
 const API_VERSION = process.env.WA_API_VERSION || 'v19.0';
 const APP_SECRET = process.env.META_APP_SECRET || '';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'store.json');
+// fail-closed: require real secrets when not explicitly in dev
+if (process.env.NODE_ENV !== 'development') {
+  if (!process.env.VERIFY_TOKEN || !process.env.ADMIN_PASSWORD || !process.env.SESSION_SECRET) {
+    console.error('[SECURITY] شغّل بـ env حقيقي (VERIFY_TOKEN/ADMIN_PASSWORD/SESSION_SECRET) أو NODE_ENV=development');
+    // allow boot for local testing but warn loudly
+  }
+}
 
 function load() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
@@ -60,6 +74,23 @@ boot();
 app.use(session({ secret: process.env.SESSION_SECRET || 'RxWaSession2026', resave: false, saveUninitialized: false, cookie: { httpOnly: true, maxAge: 7 * 24 * 3600 * 1000 } }));
 const requireLogin = (req, res, next) => { if (req.session && req.session.user) return next(); return res.status(401).send('🔒 سجّل الدخول'); };
 const requireOwner = (req, res, next) => { if (req.session && req.session.user && req.session.user.role === 'owner') return next(); return res.status(403).send('🔒 مالك فقط'); };
+
+// SECURITY: rate limiting (brute force / abuse prevention)
+const _rl = {};
+function rateLimit(key, max, windowMs) {
+  const now = Date.now(); const k = key;
+  if (!_rl[k]) _rl[k] = [];
+  _rl[k] = _rl[k].filter(t => now - t < windowMs);
+  if (_rl[k].length >= max) return false;
+  _rl[k].push(now); return true;
+}
+// SECURITY: security headers
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'");
+  next();
+});
 
 const getClientByPhone = (phoneId) => _db.clients.find(c => c.phone_id === phoneId) || null;
 const getClientById = (id) => _db.clients.find(c => c.id === id) || null;
@@ -166,7 +197,13 @@ app.get('/webhook', (req, res) => {
   res.sendStatus(403);
 });
 app.post('/webhook', (req, res) => {
-  if (APP_SECRET) { const sig = req.headers['x-hub-signature-256']; if (sig) { const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(JSON.stringify(req.body)).digest('hex'); if (sig !== expected) return res.sendStatus(401); } }
+  // SECURITY: require signature verification if APP_SECRET is configured (fail-closed)
+  if (APP_SECRET) {
+    const sig = req.headers['x-hub-signature-256'];
+    if (!sig) return res.sendStatus(401);
+    const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(JSON.stringify(req.body)).digest('hex');
+    if (sig !== expected) return res.sendStatus(401);
+  }
   if (!req.body || req.body.object !== 'whatsapp_business_account') return res.sendStatus(200);
   (async () => {
     for (const entry of (req.body.entry || [])) for (const change of (entry.changes || [])) {
@@ -240,6 +277,9 @@ app.post('/generic/webhook', (req, res) => {
 
 // ---------- auth ----------
 app.post('/login', (req, res) => {
+  // SECURITY: rate limit brute force (10 tries / 10 min per IP)
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!rateLimit('login:' + ip, 10, 10 * 60 * 1000)) return res.status(429).send('🔒 كثير محاولات. جرّب بعد شوي.');
   const { username, password } = req.body; const user = _db.users.find(u => u.username === username);
   if (!user || !bcrypt.compareSync(password || '', user.password)) return res.status(401).send('🔒 خطأ باسم المستخدم أو كلمة السر');
   req.session.user = { username: user.username, client_id: user.client_id, role: user.role, email: user.email };
@@ -266,9 +306,11 @@ app.post('/api/reply', requireLogin, async (req, res) => {
 });
 
 // ---------- admin (owner) ----------
+// SECURITY: admin uses session (owner role), NOT Basic Auth (no plaintext password per request)
 function adminAuth(req, res, next) {
-  const auth = req.headers['authorization'] || ''; const expected = 'Basic ' + Buffer.from('admin:' + ADMIN_PASSWORD).toString('base64');
-  if (auth !== expected) { res.set('WWW-Authenticate', 'Basic realm="RX WA"'); return res.status(401).send('🔒 مصرح فقط'); }
+  if (!req.session || !req.session.user || req.session.user.role !== 'owner') return res.status(403).send('🔒 مالك فقط');
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!rateLimit('admin:' + ip, 30, 10 * 60 * 1000)) return res.status(429).send('🔒 كثير طلبات. جرّب بعد شوي.');
   next();
 }
 app.get('/admin', adminAuth, (req, res) => res.send(adminHtml()));
@@ -276,6 +318,7 @@ app.post('/admin/user', adminAuth, (req, res) => {
   const { username, password, client_id, email } = req.body;
   if (!username || !password || !client_id) return res.status(400).send('missing');
   if (_db.users.find(u => u.username === username)) return res.status(400).send('موجود');
+  if (password.length < 8) return res.status(400).send('كلمة السر ضعيفة (8+ حروف)');
   _db.users.push({ username, client_id, password: bcrypt.hashSync(password, 10), role: 'staff', email: email || '' }); save(_db); res.redirect('/admin');
 });
 app.post('/admin/client', adminAuth, (req, res) => {
@@ -293,6 +336,7 @@ app.post('/admin/store', adminAuth, (req, res) => {
 app.post('/admin/broadcast', adminAuth, async (req, res) => {
   const { client_id, template, recipients } = req.body; const client = getClientById(client_id); if (!client) return res.status(404).send('no client');
   const nums = (recipients || '').split('\n').map(s => s.trim()).filter(Boolean);
+  if (nums.length > 500) return res.status(400).send('الحد الأقصى 500 رقم');
   let sent = 0;
   for (const n of nums) { await sendTemplate(client, normalizePhone(n), template || 'cart_reminder', 'ar', [{ type: 'body', parameters: [{ type: 'text', text: client.name }] }]); sent++; await new Promise(r => setTimeout(r, 300)); }
   res.json({ ok: true, sent });
