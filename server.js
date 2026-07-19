@@ -307,12 +307,18 @@ app.get('/inbox', requireLogin, (req, res) => res.send(inboxHtml(req.session.use
 app.get('/api/conversations', requireLogin, (req, res) => {
   const cid = req.session.user.client_id; const msgs = _db.messages.filter(m => m.client_id === cid); const byNum = {};
   for (const m of msgs) (byNum[m.from_num] = byNum[m.from_num] || []).push(m);
-  const convs = Object.entries(byNum).map(([num, list]) => ({ num, last: list[list.length - 1], count: list.length, unread: list.filter(m => m.direction === 'in' && !m.read).length, staffRequested: !!_db.staffRequests[num] })).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
+  const convs = Object.entries(byNum).map(([num, list]) => {
+    const last = list[list.length - 1];
+    const lastText = (last && last.text && typeof last.text === 'object' && last.text.text && last.text.text.body) ? last.text.text.body : (last && last.text && typeof last.text === 'string' ? last.text : '');
+    return { num, last: { at: last.at, direction: last.direction, text: lastText }, count: list.length, unread: list.filter(m => m.direction === 'in' && !m.read).length, staffRequested: !!_db.staffRequests[num] };
+  }).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
   res.json({ client: getClientById(cid), conversations: convs });
 });
 app.get('/api/messages/:num', requireLogin, (req, res) => {
   const cid = req.session.user.client_id; const list = _db.messages.filter(m => m.client_id === cid && m.from_num === req.params.num);
-  list.forEach(m => { if (m.direction === 'in') m.read = true; }); save(_db); res.json(list);
+  list.forEach(m => { if (m.direction === 'in') m.read = true; });
+  const out = list.map(m => ({ direction: m.direction, at: m.at, text: (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '') }));
+  save(_db); res.json(out);
 });
 app.post('/api/reply', requireLogin, async (req, res) => {
   const cid = req.session.user.client_id; const client = getClientById(cid); if (!client) return res.status(404).send('no client');
