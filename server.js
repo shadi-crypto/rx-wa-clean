@@ -211,12 +211,12 @@ app.get('/webhook', (req, res) => {
   res.sendStatus(403);
 });
 app.post('/webhook', (req, res) => {
-  // SECURITY: require signature verification if APP_SECRET is configured (fail-closed)
+  // SECURITY: require signature verification if APP_SECRET is configured
   if (APP_SECRET) {
     const sig = req.headers['x-hub-signature-256'];
-    if (!sig) return res.sendStatus(401);
+    if (!sig) { console.error('[WEBHOOK] ما فيه توقيع → 401'); return res.sendStatus(401); }
     const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(JSON.stringify(req.body)).digest('hex');
-    if (sig !== expected) return res.sendStatus(401);
+    if (sig !== expected) { console.error('[WEBHOOK] توقيع خطأ → 401 (APP_SECRET قد يكون غلط)'); return res.sendStatus(401); }
   }
   if (!req.body || req.body.object !== 'whatsapp_business_account') return res.sendStatus(200);
   (async () => {
