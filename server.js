@@ -11,7 +11,6 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 const Fuse = require('fuse.js');
-const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
@@ -33,12 +32,18 @@ const APP_SECRET = process.env.META_APP_SECRET || '';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-// ---- Supabase (durable storage) ----
+// ---- Supabase (durable storage via REST, no SDK — proven to work) ----
 const SB_URL = process.env.SUPABASE_URL || '';
-const SB_KEY = process.env.SUPABASE_KEY || '';   // use service_role key on server
-let sb = null;
-if (SB_URL && SB_KEY) { try { sb = createClient(SB_URL, SB_KEY, { auth: { persistSession: false } }); console.log('[BOOT-DIAG] Supabase متصل ✅'); } catch (e) { console.error('[SUPABASE] خطأ اتصال:', e.message); } }
-else console.log('[BOOT-DIAG] ⚠️ SUPABASE_URL/KEY فاضي → وضع الذاكرة المؤقت (الرسائل تروح مع إعادة التشغيل)');
+const SB_KEY = process.env.SUPABASE_KEY || '';   // service_role key
+const _sbOK = !!(SB_URL && SB_KEY);
+if (_sbOK) console.log('[BOOT-DIAG] Supabase REST جاهز ✅ (' + SB_URL + ')');
+else console.log('[BOOT-DIAG] ⚠️ SUPABASE_URL/KEY فاضي → وضع الذاكرة المؤقت');
+const _sbHeaders = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };
+async function sbReq(method, table, opts = {}) {
+  const url = `${SB_URL}/rest/v1/${table}` + (opts.qs ? `?${opts.qs}` : '');
+  const r = await axios({ method, url, headers: _sbHeaders, data: opts.body });
+  return r.data;
+}
 
 // In-memory cache (fast access) — synced with Supabase
 let _db = { clients: [], qa: [], users: [], flows: {}, misses: {}, staffRequests: {}, lastInbound: {}, storeEvents: [] };
@@ -46,42 +51,39 @@ const _seen = new Set(); // webhook dedupe (in-memory, reliable)
 
 // ---- DB helpers ----
 async function dbLoad() {
-  if (!sb) return false;
+  if (!_sbOK) return false;
   try {
     const [cl, qa, us] = await Promise.all([
-      sb.from('clients').select('*'),
-      sb.from('qa').select('*'),
-      sb.from('users').select('*'),
+      sbReq('GET', 'clients', { qs: 'select=*' }),
+      sbReq('GET', 'qa', { qs: 'select=*' }),
+      sbReq('GET', 'users', { qs: 'select=*' }),
     ]);
-    if (cl.data) _db.clients = cl.data;
-    if (qa.data) _db.qa = qa.data;
-    if (us.data) _db.users = us.data;
+    _db.clients = cl || []; _db.qa = qa || []; _db.users = us || [];
     return true;
   } catch (e) { console.error('[SUPABASE] تحميل فشل:', e.message); return false; }
 }
 async function dbSaveClient(c) {
-  if (!sb) return;
-  const { id, name, phone_id, wa_token, flow, owner_email, system_prompt, maintenance_msg, store } = c;
-  await sb.from('clients').upsert({ id, name, phone_id, wa_token, flow: flow || 'qa', owner_email: owner_email || '', system_prompt: system_prompt || '', maintenance_msg: maintenance_msg || '', store: store || null });
+  if (!_sbOK) return;
+  const row = { id: c.id, name: c.name, phone_id: c.phone_id, wa_token: c.wa_token, flow: c.flow || 'qa', owner_email: c.owner_email || '', system_prompt: c.system_prompt || '', maintenance_msg: c.maintenance_msg || '', store: c.store || null };
+  await sbReq('POST', 'clients', { qs: 'on_conflict=id', body: [row] });
 }
 async function dbSaveUser(u) {
-  if (!sb) return;
-  await sb.from('users').upsert({ username: u.username, client_id: u.client_id, password: u.password, role: u.role, email: u.email || '' });
+  if (!_sbOK) return;
+  await sbReq('POST', 'users', { qs: 'on_conflict=username', body: [{ username: u.username, client_id: u.client_id, password: u.password, role: u.role, email: u.email || '' }] });
 }
 async function dbAddMessage(m) {
-  if (!sb) { console.error('[SUPABASE] dbAddMessage: لا يوجد اتصال'); return; }
+  if (!_sbOK) { console.error('[SUPABASE] dbAddMessage: لا يوجد اتصال'); return; }
   try {
     const body = (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '');
     const mediaType = (m.text && typeof m.text === 'object') ? m.text.type : null;
     const row = { client_id: m.client_id, from_num: String(m.from_num), direction: m.direction, body, media_type: mediaType, at: m.at || new Date().toISOString() };
-    const { data, error } = await sb.from('messages').insert(row).select();
-    if (error) console.error('[SUPABASE] insert فشل:', error.message, JSON.stringify(row).slice(0,120));
-    else console.log('[SUPABASE] ✅ رسالة محفوظة:', m.from_num, '-', (body||'').slice(0,30));
-  } catch (e) { console.error('[SUPABASE] insert استثناء:', e.message); }
+    await sbReq('POST', 'messages', { body: [row] });
+    console.log('[SUPABASE] ✅ رسالة محفوظة:', m.from_num, '-', (body || '').slice(0, 30));
+  } catch (e) { console.error('[SUPABASE] insert فشل:', e.message); }
 }
 async function dbGetMessages(cid) {
-  if (!sb) return [];
-  const { data } = await sb.from('messages').select('*').eq('client_id', cid).order('at', { ascending: true });
+  if (!_sbOK) return [];
+  const data = await sbReq('GET', 'messages', { qs: `select=*&client_id=eq.${encodeURIComponent(cid)}&order=at.asc` });
   return (data || []).map(r => ({ client_id: r.client_id, from_num: r.from_num, direction: r.direction, text: r.body, at: r.at, read: r.read }));
 }
 async function boot() {
