@@ -228,7 +228,10 @@ app.post('/webhook', (req, res) => {
     for (const entry of (req.body.entry || [])) for (const change of (entry.changes || [])) {
       const value = change.value || {}; const phoneId = value.metadata && value.metadata.phone_number_id; const client = getClientByPhone(phoneId); if (!client) continue;
       for (const m of (value.messages || [])) {
-        const from = m.from; const text = (m.text && m.text.body || '').trim(); const hasImage = !!(m.image || m.document || m.video || m.audio);
+        const from = m.from; const wid = m.id; const text = (m.text && m.text.body || '').trim(); const hasImage = !!(m.image || m.document || m.video || m.audio);
+        // DEDUPE: Meta retries webhook delivery; skip if we already processed this message id
+        if (wid && _db.seenEvents[wid]) continue;
+        if (wid) { _db.seenEvents[wid] = true; save(_db); }
         let buttonId = null;
         if (m.interactive && m.interactive.type === 'button_reply') { buttonId = m.interactive.button_reply.id; logMsg(client.id, from, 'in', '[زر] ' + (m.interactive.button_reply.title || buttonId)); }
         else logMsg(client.id, from, 'in', text || (m.image ? '[صورة]' : m.video ? '[فيديو]' : m.document ? '[ملف]' : m.audio ? '[صوت]' : ''));
