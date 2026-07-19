@@ -37,7 +37,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const SB_URL = process.env.SUPABASE_URL || '';
 const SB_KEY = process.env.SUPABASE_KEY || '';   // use service_role key on server
 let sb = null;
-if (SB_URL && SB_KEY) { try { sb = createClient(SB_URL, SB_KEY); console.log('[BOOT-DIAG] Supabase متصل ✅'); } catch (e) { console.error('[SUPABASE] خطأ اتصال:', e.message); } }
+if (SB_URL && SB_KEY) { try { sb = createClient(SB_URL, SB_KEY, { auth: { persistSession: false } }); console.log('[BOOT-DIAG] Supabase متصل ✅'); } catch (e) { console.error('[SUPABASE] خطأ اتصال:', e.message); } }
 else console.log('[BOOT-DIAG] ⚠️ SUPABASE_URL/KEY فاضي → وضع الذاكرة المؤقت (الرسائل تروح مع إعادة التشغيل)');
 
 // In-memory cache (fast access) — synced with Supabase
