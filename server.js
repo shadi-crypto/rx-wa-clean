@@ -432,7 +432,7 @@ let cur=''; let lastTs=0;
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},3500);}
 async function load(){
   try{
-    const r=await fetch('/api/conversations'); const d=await r.json();
+    const r=await fetch('/api/conversations',{credentials:'include'}); const d=await r.json();
     let maxTs=lastTs;
     (d.conversations||[]).forEach(function(c){const last=c.last||{};const ts=new Date(last.at||0).getTime();if(!isNaN(ts)&&ts>maxTs)maxTs=ts;});
     if(maxTs>lastTs)lastTs=maxTs;
@@ -446,7 +446,7 @@ async function load(){
   }catch(e){console.error('load err',e);}
 }
 document.getElementById('list').addEventListener('click',function(e){const el=e.target.closest('.conv');if(el&&el.dataset.num)openC(el.dataset.num);});
-async function openC(num){cur=num;try{const r=await fetch('/api/messages/'+encodeURIComponent(num));const d=await r.json();document.getElementById('msgs').innerHTML=(d||[]).map(function(m){const t=(typeof m.text==='string')?m.text:(m.text&&m.text.body?m.text.body:'');return '<div class="b '+(m.direction||'in')+'">'+(t||'')+'</div>';}).join('');const ms=document.getElementById('msgs');ms.scrollTop=ms.scrollHeight;}catch(e){}load();}
+async function openC(num){cur=num;try{const r=await fetch('/api/messages/'+encodeURIComponent(num),{credentials:'include'});const d=await r.json();document.getElementById('msgs').innerHTML=(d||[]).map(function(m){const t=(typeof m.text==='string')?m.text:(m.text&&m.text.body?m.text.body:'');return '<div class="b '+(m.direction||'in')+'">'+(t||'')+'</div>';}).join('');const ms=document.getElementById('msgs');ms.scrollTop=ms.scrollHeight;}catch(e){}load();}
 async function send(){if(!cur)return;const t=document.getElementById('txt').value;if(!t)return;await fetch('/api/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({num:cur,text:t})});document.getElementById('txt').value='';openC(cur);}
 load(); setInterval(load,4000);
 </script></body></html>`;
