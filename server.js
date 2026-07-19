@@ -54,7 +54,7 @@ function boot() {
   if (!_db.storeEvents) _db.storeEvents = [];
   if (!_db.seenEvents) _db.seenEvents = {};
   if (!_db.clients.find(c => c.id === 'halat')) {
-    _db.clients.push({ id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.ALERT_EMAIL || '', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null });
+    _db.clients.push({ id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null });
   }
   if (!_db.qa.length) {
     try {
@@ -105,10 +105,11 @@ function mailer() {
   return _mailer;
 }
 async function alertStaff(client, from, text) {
-  const to = client.owner_email || process.env.ALERT_EMAIL;
-  if (!to) return;
+  // SECURITY + correct routing: alert goes to the CLIENT's staff email, not the owner
+  const to = client.owner_email;
+  if (!to) { console.log('[EMAIL] ما فيه إيميل موظف للعميل', client.id); return; }
   const t = mailer(); if (!t) return;
-  try { await t.sendMail({ from: process.env.ALERT_EMAIL, to, subject: `🔔 طلب تواصل — ${client.name}`, text: `عميل طلب التواصل.\nرقم: ${from}\nرسالة: ${text}\nhttps://${process.env.RENDER_EXTERNAL_URL || 'rx-wa.onrender.com'}/inbox` }); console.log('[EMAIL] أرسل تنبيه إلى', to); }
+  try { await t.sendMail({ from: process.env.ALERT_EMAIL, to, subject: `🔔 طلب تواصل — ${client.name}`, text: `عميل طلب التواصل.\nرقم: ${from}\nرسالة: ${text}\nhttps://${process.env.RENDER_EXTERNAL_URL || 'rx-wa.onrender.com'}/inbox` }); console.log('[EMAIL] أرسل تنبيه إلى موظف:', to); }
   catch (e) { console.error('[EMAIL] خطأ:', e.message); }
 }
 
@@ -325,6 +326,7 @@ app.post('/admin/client', adminAuth, (req, res) => {
   const { id, name, phone_id, wa_token, system_prompt, owner_email } = req.body;
   if (!id || !name || !phone_id || !wa_token) return res.status(400).send('missing');
   if (_db.clients.find(c => c.id === id)) return res.status(400).send('موجود');
+  // owner_email = staff alert email for THIS client (per-client routing)
   _db.clients.push({ id, name, phone_id, wa_token, flow: 'qa', owner_email: owner_email || '', system_prompt: system_prompt || 'أنت موظف خدمة عملاء. أجب بالعربية وباختصار.', store: null }); save(_db);
   res.redirect('/admin');
 });
