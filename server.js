@@ -27,7 +27,7 @@ function reqEnv(name) {
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'RxWa@2026!SecureVerify';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'RxWa@2026!Admin';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'RxWaSession2026';
-const API_VERSION = process.env.WA_API_VERSION || 'v19.0';
+const API_VERSION = process.env.WA_API_VERSION || 'v21.0';
 const APP_SECRET = process.env.META_APP_SECRET || '';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const DATA_DIR = path.join(__dirname, 'data');
@@ -51,8 +51,11 @@ function save(d) {
     fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2));
   } catch (e) {
     console.error('[SAVE-ERR] فشل حفظ store.json:', e.message, '| path:', DB_FILE);
+    throw e;
   }
 }
+// In-memory dedupe for webhook retries (survives within a process lifetime)
+const _seen = new Set();
 let _db = load();
 
 function boot() {
@@ -229,9 +232,9 @@ app.post('/webhook', (req, res) => {
       const value = change.value || {}; const phoneId = value.metadata && value.metadata.phone_number_id; const client = getClientByPhone(phoneId); if (!client) continue;
       for (const m of (value.messages || [])) {
         const from = m.from; const wid = m.id; const text = (m.text && m.text.body || '').trim(); const hasImage = !!(m.image || m.document || m.video || m.audio);
-        // DEDUPE: Meta retries webhook delivery; skip if we already processed this message id
-        if (wid && _db.seenEvents[wid]) continue;
-        if (wid) { _db.seenEvents[wid] = true; save(_db); }
+        // DEDUPE: Meta retries webhook delivery; skip if we already processed this message id (in-memory = reliable)
+        if (wid && _seen.has(wid)) continue;
+        if (wid) _seen.add(wid);
         let buttonId = null;
         if (m.interactive && m.interactive.type === 'button_reply') { buttonId = m.interactive.button_reply.id; logMsg(client.id, from, 'in', '[زر] ' + (m.interactive.button_reply.title || buttonId)); }
         else logMsg(client.id, from, 'in', text || (m.image ? '[صورة]' : m.video ? '[فيديو]' : m.document ? '[ملف]' : m.audio ? '[صوت]' : ''));
