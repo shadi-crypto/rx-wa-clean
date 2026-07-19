@@ -61,7 +61,7 @@ function boot() {
   if (!_db.storeEvents) _db.storeEvents = [];
   if (!_db.seenEvents) _db.seenEvents = {};
   if (!_db.clients.find(c => c.id === 'halat')) {
-    _db.clients.push({ id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null });
+    _db.clients.push({ id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', maintenance_msg: '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n📱 جوال/واتساب: 966579591669\n🌐 تويتر/إنستقرام: @halat_sa', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null });
   }
   if (!_db.qa.length) {
     try {
@@ -179,6 +179,11 @@ function findReply(client, text) {
 async function handleMessage(client, from, text, hasImage, buttonId) {
   markInbound(client.id, from);
   console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"${hasImage ? ' [صورة]' : ''}${buttonId ? ' [زر:' + buttonId + ']' : ''}`);
+  // MAINTENANCE MODE (mute) — temporary auto-reply, no Q&A/LLM
+  if (process.env.MAINTENANCE_MODE === 'on') {
+    const info = client.maintenance_msg || '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (client.owner_email || 'support@halat.sa') + '\n📱 جوال: 966579591669\n🌐 التواصل الاجتماعي: @halat_sa';
+    return sendText(client, from, info);
+  }
   const lower = (text || '').toLowerCase();
   if (buttonId) {
     if (buttonId === 'btn0') return sendText(client, from, '🚚 مدة الشحن: الرياض 1-3 أيام، باقي المدن 3-5 أيام.');
