@@ -67,6 +67,12 @@ function boot() {
     _db.users.push({ username: 'admin', client_id: 'halat', password: bcrypt.hashSync(ADMIN_PASSWORD, 10), role: 'owner', email: process.env.ALERT_EMAIL || '' });
   }
   save(_db);
+  // DIAGNOSTIC (no secrets printed): confirm which env vars reached the container
+  const diag = ['VERIFY_TOKEN','ADMIN_PASSWORD','SESSION_SECRET','HALAT_PHONE_ID','HALAT_WA_TOKEN','META_APP_SECRET','GROQ_API_KEY','ALERT_EMAIL','HALAT_STAFF_EMAIL','RENDER_EXTERNAL_URL'];
+  const present = diag.filter(k => process.env[k]);
+  console.log(`[BOOT-DIAG] env vars present (${present.length}/${diag.length}): ${present.join(', ')}`);
+  if (!process.env.HALAT_WA_TOKEN || process.env.HALAT_WA_TOKEN === 'demo') console.log('[BOOT-DIAG] ⚠️ HALAT_WA_TOKEN فاضي → البوت بوضع demo (ما يرد حقيقي)');
+  if (!process.env.ADMIN_PASSWORD) console.log('[BOOT-DIAG] ⚠️ ADMIN_PASSWORD فاضي → دخول admin يفشل');
   console.log(`[BOOT] جاهز: ${_db.clients.length} عميل، ${_db.qa.length} سؤال، ${_db.users.length} مستخدم`);
 }
 boot();

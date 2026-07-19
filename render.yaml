@@ -7,13 +7,13 @@ services:
     healthCheckPath: /health
     envVars:
       - key: VERIFY_TOKEN
-        value: RxWa@2026!SecureVerify
+        sync: false
       - key: PORT
         value: 3000
       - key: WA_API_VERSION
         value: v19.0
       - key: ADMIN_PASSWORD
-        value: RxWa@2026!Admin
+        sync: false
       - key: SESSION_SECRET
         sync: false
       - key: META_APP_SECRET
@@ -22,9 +22,13 @@ services:
         sync: false
       - key: HALAT_WA_TOKEN
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: ALERT_EMAIL
         sync: false
       - key: ALERT_EMAIL_PASS
         sync: false
+      - key: HALAT_STAFF_EMAIL
+        sync: false
       - key: RENDER_EXTERNAL_URL
-        value: rx-wa.onrender.com
+        sync: false
