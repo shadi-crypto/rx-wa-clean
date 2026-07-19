@@ -69,10 +69,15 @@ async function dbSaveUser(u) {
   await sb.from('users').upsert({ username: u.username, client_id: u.client_id, password: u.password, role: u.role, email: u.email || '' });
 }
 async function dbAddMessage(m) {
-  if (!sb) return;
-  const body = (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '');
-  const mediaType = (m.text && typeof m.text === 'object') ? m.text.type : null;
-  await sb.from('messages').insert({ client_id: m.client_id, from_num: m.from_num, direction: m.direction, body, media_type: mediaType, at: m.at });
+  if (!sb) { console.error('[SUPABASE] dbAddMessage: لا يوجد اتصال'); return; }
+  try {
+    const body = (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '');
+    const mediaType = (m.text && typeof m.text === 'object') ? m.text.type : null;
+    const row = { client_id: m.client_id, from_num: String(m.from_num), direction: m.direction, body, media_type: mediaType, at: m.at || new Date().toISOString() };
+    const { data, error } = await sb.from('messages').insert(row).select();
+    if (error) console.error('[SUPABASE] insert فشل:', error.message, JSON.stringify(row).slice(0,120));
+    else console.log('[SUPABASE] ✅ رسالة محفوظة:', m.from_num, '-', (body||'').slice(0,30));
+  } catch (e) { console.error('[SUPABASE] insert استثناء:', e.message); }
 }
 async function dbGetMessages(cid) {
   if (!sb) return [];
