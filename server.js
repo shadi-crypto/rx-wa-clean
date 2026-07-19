@@ -49,6 +49,10 @@ async function sbReq(method, table, opts = {}) {
 let _db = { clients: [], qa: [], users: [], flows: {}, misses: {}, staffRequests: {}, lastInbound: {}, storeEvents: [] };
 const _seen = new Set(); // webhook dedupe (in-memory, reliable)
 
+// save() is now a no-op: durable storage goes to Supabase via db* helpers above.
+// (In-memory state is synced to Supabase; this keeps legacy save(_db) calls safe.)
+function save() { return; }
+
 // ---- DB helpers ----
 async function dbLoad() {
   if (!_sbOK) return false;
@@ -367,7 +371,7 @@ app.get('/api/messages/:num', requireLogin, async (req, res) => {
   list = list.filter(m => m.from_num === req.params.num);
   list.forEach(m => { if (m.direction === 'in') m.read = true; });
   const out = list.map(m => ({ direction: m.direction, at: m.at, text: (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '') }));
-  save(_db); res.json(out);
+  res.json(out);
 });
 app.post('/api/reply', requireLogin, async (req, res) => {
   const cid = req.session.user.client_id; const client = getClientById(cid); if (!client) return res.status(404).send('no client');
