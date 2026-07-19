@@ -45,7 +45,14 @@ function load() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
   catch (e) { return { clients: [], qa: [], messages: [], flows: {}, misses: {}, users: [], staffRequests: {}, lastInbound: {}, storeEvents: [], seenEvents: {} }; }
 }
-function save(d) { try { fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2)); } catch (e) {} }
+function save(d) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2));
+  } catch (e) {
+    console.error('[SAVE-ERR] فشل حفظ store.json:', e.message, '| path:', DB_FILE);
+  }
+}
 let _db = load();
 
 function boot() {
