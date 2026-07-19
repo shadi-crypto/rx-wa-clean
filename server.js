@@ -11,6 +11,7 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 const Fuse = require('fuse.js');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
@@ -32,57 +33,74 @@ const APP_SECRET = process.env.META_APP_SECRET || '';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const DB_FILE = path.join(DATA_DIR, 'store.json');
-// fail-closed: require real secrets when not explicitly in dev
-if (process.env.NODE_ENV !== 'development') {
-  if (!process.env.VERIFY_TOKEN || !process.env.ADMIN_PASSWORD || !process.env.SESSION_SECRET) {
-    console.error('[SECURITY] شغّل بـ env حقيقي (VERIFY_TOKEN/ADMIN_PASSWORD/SESSION_SECRET) أو NODE_ENV=development');
-    // allow boot for local testing but warn loudly
-  }
-}
+// ---- Supabase (durable storage) ----
+const SB_URL = process.env.SUPABASE_URL || '';
+const SB_KEY = process.env.SUPABASE_KEY || '';   // use service_role key on server
+let sb = null;
+if (SB_URL && SB_KEY) { try { sb = createClient(SB_URL, SB_KEY); console.log('[BOOT-DIAG] Supabase متصل ✅'); } catch (e) { console.error('[SUPABASE] خطأ اتصال:', e.message); } }
+else console.log('[BOOT-DIAG] ⚠️ SUPABASE_URL/KEY فاضي → وضع الذاكرة المؤقت (الرسائل تروح مع إعادة التشغيل)');
 
-function load() {
-  try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
-  catch (e) { return { clients: [], qa: [], messages: [], flows: {}, misses: {}, users: [], staffRequests: {}, lastInbound: {}, storeEvents: [], seenEvents: {} }; }
-}
-function save(d) {
+// In-memory cache (fast access) — synced with Supabase
+let _db = { clients: [], qa: [], users: [], flows: {}, misses: {}, staffRequests: {}, lastInbound: {}, storeEvents: [] };
+const _seen = new Set(); // webhook dedupe (in-memory, reliable)
+
+// ---- DB helpers ----
+async function dbLoad() {
+  if (!sb) return false;
   try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2));
-  } catch (e) {
-    console.error('[SAVE-ERR] فشل حفظ store.json:', e.message, '| path:', DB_FILE);
-    throw e;
-  }
+    const [cl, qa, us] = await Promise.all([
+      sb.from('clients').select('*'),
+      sb.from('qa').select('*'),
+      sb.from('users').select('*'),
+    ]);
+    if (cl.data) _db.clients = cl.data;
+    if (qa.data) _db.qa = qa.data;
+    if (us.data) _db.users = us.data;
+    return true;
+  } catch (e) { console.error('[SUPABASE] تحميل فشل:', e.message); return false; }
 }
-// In-memory dedupe for webhook retries (survives within a process lifetime)
-const _seen = new Set();
-let _db = load();
-
-function boot() {
-  if (!_db.staffRequests) _db.staffRequests = {};
-  if (!_db.lastInbound) _db.lastInbound = {};
-  if (!_db.storeEvents) _db.storeEvents = [];
-  if (!_db.seenEvents) _db.seenEvents = {};
+async function dbSaveClient(c) {
+  if (!sb) return;
+  const { id, name, phone_id, wa_token, flow, owner_email, system_prompt, maintenance_msg, store } = c;
+  await sb.from('clients').upsert({ id, name, phone_id, wa_token, flow: flow || 'qa', owner_email: owner_email || '', system_prompt: system_prompt || '', maintenance_msg: maintenance_msg || '', store: store || null });
+}
+async function dbSaveUser(u) {
+  if (!sb) return;
+  await sb.from('users').upsert({ username: u.username, client_id: u.client_id, password: u.password, role: u.role, email: u.email || '' });
+}
+async function dbAddMessage(m) {
+  if (!sb) return;
+  const body = (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '');
+  const mediaType = (m.text && typeof m.text === 'object') ? m.text.type : null;
+  await sb.from('messages').insert({ client_id: m.client_id, from_num: m.from_num, direction: m.direction, body, media_type: mediaType, at: m.at });
+}
+async function dbGetMessages(cid) {
+  if (!sb) return [];
+  const { data } = await sb.from('messages').select('*').eq('client_id', cid).order('at', { ascending: true });
+  return (data || []).map(r => ({ client_id: r.client_id, from_num: r.from_num, direction: r.direction, text: r.body, at: r.at, read: r.read }));
+}
+async function boot() {
+  await dbLoad();
   if (!_db.clients.find(c => c.id === 'halat')) {
-    _db.clients.push({ id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', maintenance_msg: '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null });
+    const c = { id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', maintenance_msg: '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null };
+    _db.clients.push(c); await dbSaveClient(c);
   }
   if (!_db.qa.length) {
     try {
       const qa = JSON.parse(fs.readFileSync(path.join(__dirname, 'qa.json'), 'utf8'));
       _db.qa = qa.map(q => ({ client_id: q.client_id || 'halat', question: q.question, keywords: q.keywords, reply: q.reply }));
+      if (sb) await sb.from('qa').upsert(_db.qa, { onConflict: 'client_id,question' });
       console.log(`[BOOT] زرع ${_db.qa.length} سؤال ✅`);
     } catch (e) { console.log('[BOOT] تعذّر زرع qa:', e.message); }
   }
   if (!_db.users.find(u => u.username === 'admin')) {
-    _db.users.push({ username: 'admin', client_id: 'halat', password: bcrypt.hashSync(ADMIN_PASSWORD, 10), role: 'owner', email: process.env.ALERT_EMAIL || '' });
+    const u = { username: 'admin', client_id: 'halat', password: bcrypt.hashSync(ADMIN_PASSWORD, 10), role: 'owner', email: process.env.ALERT_EMAIL || '' };
+    _db.users.push(u); await dbSaveUser(u);
   }
-  save(_db);
-  // DIAGNOSTIC (no secrets printed): confirm which env vars reached the container
-  const diag = ['VERIFY_TOKEN','ADMIN_PASSWORD','SESSION_SECRET','HALAT_PHONE_ID','HALAT_WA_TOKEN','META_APP_SECRET','GROQ_API_KEY','ALERT_EMAIL','HALAT_STAFF_EMAIL','RENDER_EXTERNAL_URL'];
+  const diag = ['VERIFY_TOKEN','ADMIN_PASSWORD','SESSION_SECRET','HALAT_PHONE_ID','HALAT_WA_TOKEN','META_APP_SECRET','GROQ_API_KEY','ALERT_EMAIL','HALAT_STAFF_EMAIL','RENDER_EXTERNAL_URL','SUPABASE_URL','SUPABASE_KEY'];
   const present = diag.filter(k => process.env[k]);
   console.log(`[BOOT-DIAG] env vars present (${present.length}/${diag.length}): ${present.join(', ')}`);
-  if (!process.env.HALAT_WA_TOKEN || process.env.HALAT_WA_TOKEN === 'demo') console.log('[BOOT-DIAG] ⚠️ HALAT_WA_TOKEN فاضي → البوت بوضع demo (ما يرد حقيقي)');
-  if (!process.env.ADMIN_PASSWORD) console.log('[BOOT-DIAG] ⚠️ ADMIN_PASSWORD فاضي → دخول admin يفشل');
+  if (!process.env.HALAT_WA_TOKEN || process.env.HALAT_WA_TOKEN === 'demo') console.log('[BOOT-DIAG] ⚠️ HALAT_WA_TOKEN فاضي → البوت بوضع demo');
   console.log(`[BOOT] جاهز: ${_db.clients.length} عميل، ${_db.qa.length} سؤال، ${_db.users.length} مستخدم`);
 }
 boot();
@@ -110,7 +128,13 @@ app.use((req, res, next) => {
 
 const getClientByPhone = (phoneId) => _db.clients.find(c => c.phone_id === phoneId) || null;
 const getClientById = (id) => _db.clients.find(c => c.id === id) || null;
-const logMsg = (cid, from, dir, text) => { _db.messages.push({ client_id: cid, from_num: from, direction: dir, text, at: new Date().toISOString() }); if (_db.messages.length > 1000) _db.messages = _db.messages.slice(-1000); save(_db); };
+const logMsg = async (cid, from, dir, text) => {
+  const m = { client_id: cid, from_num: from, direction: dir, text, at: new Date().toISOString() };
+  if (!_db.messages) _db.messages = [];
+  _db.messages.push(m);
+  if (_db.messages.length > 1000) _db.messages = _db.messages.slice(-1000);
+  await dbAddMessage(m);
+};
 
 // ---------- email ----------
 let _mailer = null;
@@ -129,9 +153,11 @@ async function alertStaff(client, from, text) {
   catch (e) { console.error('[EMAIL] خطأ:', e.message); }
 }
 
-// ---------- 24h window ----------
-function markInbound(clientId, from) { if (!_db.lastInbound) _db.lastInbound = {}; _db.lastInbound[clientId + ':' + from] = Date.now(); save(_db); }
+// markInbound keeps in-memory timestamp (24h window) — no file needed
+function markInbound(clientId, from) { if (!_db.lastInbound) _db.lastInbound = {}; _db.lastInbound[clientId + ':' + from] = Date.now(); }
 function within24h(clientId, from) { const t = _db.lastInbound && _db.lastInbound[clientId + ':' + from]; return t && (Date.now() - t) < 24 * 3600 * 1000; }
+// save() is now a no-op (data persisted via Supabase helpers); kept for compatibility
+function save() {}
 
 // ---------- send ----------
 async function sendMsg(client, to, payload, opts) {
@@ -236,8 +262,8 @@ app.post('/webhook', (req, res) => {
         if (wid && _seen.has(wid)) continue;
         if (wid) _seen.add(wid);
         let buttonId = null;
-        if (m.interactive && m.interactive.type === 'button_reply') { buttonId = m.interactive.button_reply.id; logMsg(client.id, from, 'in', '[زر] ' + (m.interactive.button_reply.title || buttonId)); }
-        else logMsg(client.id, from, 'in', text || (m.image ? '[صورة]' : m.video ? '[فيديو]' : m.document ? '[ملف]' : m.audio ? '[صوت]' : ''));
+        if (m.interactive && m.interactive.type === 'button_reply') { buttonId = m.interactive.button_reply.id; await logMsg(client.id, from, 'in', '[زر] ' + (m.interactive.button_reply.title || buttonId)); }
+        else await logMsg(client.id, from, 'in', text || (m.image ? '[صورة]' : m.video ? '[فيديو]' : m.document ? '[ملف]' : m.audio ? '[صوت]' : ''));
         await handleMessage(client, from, text, hasImage, buttonId);
       }
     }
@@ -315,8 +341,11 @@ app.get('/logout', (req, res) => { req.session.destroy(() => res.redirect('/logi
 // ---------- inbox (per-client) ----------
 app.get('/login', (req, res) => res.send(loginHtml()));
 app.get('/inbox', requireLogin, (req, res) => res.send(inboxHtml(req.session.user)));
-app.get('/api/conversations', requireLogin, (req, res) => {
-  const cid = req.session.user.client_id; const msgs = _db.messages.filter(m => m.client_id === cid); const byNum = {};
+app.get('/api/conversations', requireLogin, async (req, res) => {
+  const cid = req.session.user.client_id;
+  let msgs = await dbGetMessages(cid);
+  if (!msgs.length && _db.messages) msgs = _db.messages.filter(m => m.client_id === cid);
+  const byNum = {};
   for (const m of msgs) (byNum[m.from_num] = byNum[m.from_num] || []).push(m);
   const convs = Object.entries(byNum).map(([num, list]) => {
     const last = list[list.length - 1];
@@ -325,8 +354,10 @@ app.get('/api/conversations', requireLogin, (req, res) => {
   }).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
   res.json({ client: getClientById(cid), conversations: convs });
 });
-app.get('/api/messages/:num', requireLogin, (req, res) => {
-  const cid = req.session.user.client_id; const list = _db.messages.filter(m => m.client_id === cid && m.from_num === req.params.num);
+app.get('/api/messages/:num', requireLogin, async (req, res) => {
+  const cid = req.session.user.client_id;
+  let list = await dbGetMessages(cid);
+  list = list.filter(m => m.from_num === req.params.num);
   list.forEach(m => { if (m.direction === 'in') m.read = true; });
   const out = list.map(m => ({ direction: m.direction, at: m.at, text: (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '') }));
   save(_db); res.json(out);
