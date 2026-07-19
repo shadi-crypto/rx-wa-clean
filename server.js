@@ -133,7 +133,9 @@ function rateLimit(key, max, windowMs) {
 app.use((req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
-  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'");
+  // Allow inline scripts/styles for the Inbox SPA (rendered server-side with inline JS).
+  // 'self' would block inline <script>; we keep 'unsafe-inline' since the app is trusted.
+  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'");
   next();
 });
 
