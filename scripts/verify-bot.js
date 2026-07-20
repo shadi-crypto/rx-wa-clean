@@ -66,6 +66,8 @@ function assert(name, cond, extra) {
   let rep = null;
   try { rep = JSON.parse(r.body); } catch (e) {}
   assert('reply endpoint returns JSON', !!rep, `status=${r.status}`);
+  // cleanup: the reply above created a fake conversation; that's fine for live proof but we note it
+  console.log('ℹ️ note: verify-bot /api/reply posts to 0000000000 (test conv created — harmless)');
 
   console.log(process.exitCode ? '\n❌ VERIFY FAILED' : '\n✅ VERIFY PASSED — المشروع جاهز');
   process.exit(process.exitCode || 0);

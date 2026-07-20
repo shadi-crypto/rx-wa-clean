@@ -370,7 +370,7 @@ app.get('/api/conversations', requireLogin, async (req, res) => {
   for (const m of msgs) (byNum[m.from_num] = byNum[m.from_num] || []).push(m);
   const convs = Object.entries(byNum).map(([num, list]) => {
     const last = list[list.length - 1];
-    const lastText = (last && last.text && typeof last.text === 'object' && last.text.text && last.text.text.body) ? last.text.text.body : (last && last.text && typeof last.text === 'string' ? last.text : '');
+    const lastText = (last && last.text && typeof last.text === 'string') ? last.text : '';
     return { num, last: { at: last.at, direction: last.direction, text: lastText }, count: list.length, unread: list.filter(m => m.direction === 'in' && !m.read).length, staffRequested: !!_db.staffRequests[num] };
   }).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
   res.json({ client: getClientById(cid), conversations: convs });
@@ -382,7 +382,7 @@ app.get('/api/messages/:num', requireLogin, async (req, res) => {
   let list = await dbGetMessages(cid);
   list = list.filter(m => m.from_num === req.params.num);
   list.forEach(m => { if (m.direction === 'in') m.read = true; });
-  const out = list.map(m => ({ direction: m.direction, at: m.at, text: (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '') }));
+  const out = list.map(m => ({ direction: m.direction, at: m.at, text: (typeof m.text === 'string' ? m.text : '') }));
   res.json(out);
  } catch (e) { console.error('[API] messages خطأ:', e.message); res.json([]); }
 });
