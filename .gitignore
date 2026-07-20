@@ -1,7 +1,4 @@
-node_modules/
-data/
 .env
-.env.*
-!.env.example
+node_modules/
 *.log
-.DS_Store
+data/

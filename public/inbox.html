@@ -3,31 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Inbox — RX WA</title>
+<title>RX WA — صندوق الوارد</title>
 <link rel="stylesheet" href="/inbox.css">
 </head>
 <body>
-<header>
-  <div class="brand">💬 RX WA — <span id="cname"></span></div>
-  <div class="hdr-right">
-    <span class="bell" id="bell"></span>
-    <a href="/logout">خروج</a>
-  </div>
-</header>
-<div class="wrap">
-  <aside class="list" id="list">
-    <div class="empty">لا محادثات بعد</div>
+<div id="app">
+  <!-- Sidebar: conversation list (Chatwoot-style) -->
+  <aside id="sidebar">
+    <header id="sb-head">
+      <div class="brand">💬 RX WA</div>
+      <div class="sb-meta" id="clientName">—</div>
+    </header>
+    <div id="searchWrap">
+      <input id="search" placeholder="🔍 بحث في المحادثات…">
+    </div>
+    <ul id="convList"></ul>
   </aside>
-  <main class="chat">
-    <div class="msgs" id="msgs">
-      <div class="placeholder">اختر محادثة من اليمين ←</div>
-    </div>
-    <div class="box">
-      <input id="txt" placeholder="اكتب رداً..." onkeydown="if(event.key==='Enter')send()">
-      <button onclick="send()">إرسال</button>
-    </div>
+
+  <!-- Main: messages + composer -->
+  <main id="main">
+    <header id="conv-head">
+      <div id="convTitle">اختر محادثة</div>
+      <div id="convSub"></div>
+    </header>
+    <div id="messages"></div>
+    <footer id="composer">
+      <textarea id="msgInput" placeholder="اكتب رداً… (Enter لإرسال)"></textarea>
+      <button id="sendBtn">إرسال ↩</button>
+    </footer>
   </main>
 </div>
+
 <div id="toast"></div>
 <script src="/inbox.js"></script>
 </body>

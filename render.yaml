@@ -1,7 +1,7 @@
 services:
   - type: web
     name: rx-wa
-    runtime: docker
+    runtime: node
     plan: free
     branch: main
     healthCheckPath: /health
@@ -31,4 +31,8 @@ services:
       - key: HALAT_STAFF_EMAIL
         sync: false
       - key: RENDER_EXTERNAL_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
         sync: false
