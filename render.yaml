@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: rx-wa
+    runtime: node
+    plan: free
+    branch: main
+    healthCheckPath: /health
+    envVars:
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: PORT
+        value: 3000
+      - key: WA_API_VERSION
+        value: v19.0
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: HALAT_PHONE_ID
+        sync: false
+      - key: HALAT_WA_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ALERT_EMAIL
+        sync: false
+      - key: ALERT_EMAIL_PASS
+        sync: false
+      - key: HALAT_STAFF_EMAIL
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
