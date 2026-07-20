@@ -175,7 +175,8 @@ function save() {}
 // ---------- send ----------
 async function sendMsg(client, to, payload, opts) {
   opts = opts || {};
-  if (opts.type !== 'template' && !within24h(client.id, to)) { console.log(`[24h] خارج النافذة -> ${to}`); return { blocked24h: true }; }
+  // Replies from the Inbox (manual, agent-sent) must always go through — never block on 24h.
+  if (!opts.force && opts.type !== 'template' && !within24h(client.id, to)) { console.log(`[24h] خارج النافذة -> ${to}`); return { blocked24h: true }; }
   if (opts.type === 'text') logMsg(client.id, to, 'out', payload);
   else logMsg(client.id, to, 'out', '[رسالة ' + opts.type + ']');
   if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) { console.log(`[ROUTE] ${client.name} -> ${to}: ${payload}`); return {}; }
@@ -377,7 +378,9 @@ app.get('/api/messages/:num', requireLogin, async (req, res) => {
 });
 app.post('/api/reply', requireLogin, async (req, res) => {
   const cid = req.session.user.client_id; const client = getClientById(cid); if (!client) return res.status(404).send('no client');
-  const { num, text } = req.body; delete _db.staffRequests[num]; save(_db); await sendText(client, num, text); res.json({ ok: true });
+  const { num, text } = req.body; delete _db.staffRequests[num]; save(_db);
+  const r = await sendText(client, num, text, { force: true }); // agent reply always sends, bypass 24h
+  res.json({ ok: true, ...r });
 });
 
 // ---------- admin (owner) ----------
