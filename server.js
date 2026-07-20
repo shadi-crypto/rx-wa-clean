@@ -120,6 +120,7 @@ async function boot() {
 }
 boot();
 
+app.set('trust proxy', 1); // Render sits behind Cloudflare/proxy → req.secure must be true so session cookie is sent
 app.use(session({ secret: process.env.SESSION_SECRET || 'RxWaSession2026', resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 7 * 24 * 3600 * 1000 } }));
 const requireLogin = (req, res, next) => { if (req.session && req.session.user) return next(); if (req.path.startsWith('/api/')) return res.status(401).send('🔒 سجّل الدخول'); return res.redirect('/login'); };
 const requireOwner = (req, res, next) => { if (req.session && req.session.user && req.session.user.role === 'owner') return next(); return res.status(403).send('🔒 مالك فقط'); };
