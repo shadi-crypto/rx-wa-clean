@@ -452,6 +452,12 @@ app.get('/admin/api/stats', adminAuth, (req, res) => {
   const byDay = {}; for (const m of msgs) { const d = m.at.slice(0, 10); byDay[d] = (byDay[d] || 0) + 1; }
   res.json({ total: msgs.length, clients: _db.clients.length, byDay });
 });
+// SECURITY MIGRATION: re-encrypt wa_token at rest + drop owner_email.
+// Runs server-side (server already holds SUPABASE_KEY + STORE_ENC_KEY) — no secret leaves the host.
+app.post('/admin/reencrypt', adminAuth, async (req, res) => {
+  try { await dbLoad(); let n = 0; for (const c of _db.clients) { await dbSaveClient(c); n++; } res.json({ ok: true, reencrypted: n }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ---------- HTML ----------
 function loginHtml() {
