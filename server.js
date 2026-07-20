@@ -135,7 +135,7 @@ app.use((req, res, next) => {
   res.set('X-Frame-Options', 'DENY');
   // Allow inline scripts/styles for the Inbox SPA (rendered server-side with inline JS).
   // 'self' would block inline <script>; we keep 'unsafe-inline' since the app is trusted.
-  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'");
+  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'");
   next();
 });
 
@@ -354,7 +354,9 @@ app.get('/logout', (req, res) => { req.session.destroy(() => res.redirect('/logi
 
 // ---------- inbox (per-client) ----------
 app.get('/login', (req, res) => res.send(loginHtml()));
-app.get('/inbox', requireLogin, (req, res) => res.send(inboxHtml(req.session.user)));
+app.get('/inbox', requireLogin, (req, res) => res.sendFile(__dirname + '/public/inbox.html'));
+app.get('/inbox.css', (req, res) => res.sendFile(__dirname + '/public/inbox.css'));
+app.get('/inbox.js', (req, res) => res.sendFile(__dirname + '/public/inbox.js'));
 app.get('/api/conversations', requireLogin, async (req, res) => {
   const cid = req.session.user.client_id;
   let msgs = await dbGetMessages(cid);
@@ -429,32 +431,6 @@ app.get('/admin/api/stats', adminAuth, (req, res) => {
 // ---------- HTML ----------
 function loginHtml() {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>RX WA — دخول</title><style>body{font-family:Tahoma,sans-serif;background:#075E54;display:flex;height:100vh;align-items:center;justify-content:center}.card{background:#fff;padding:34px;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.25);width:330px;text-align:center}.logo{font-size:40px;margin-bottom:6px}.card h2{margin:0 0 18px;color:#075E54}input{padding:12px;width:100%;margin:8px 0;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;font-size:15px}button{background:#25D366;color:#fff;border:0;padding:13px;width:100%;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}</style></head><body><div class="card"><div class="logo">💬</div><h2>RX WA</h2><form method="POST" action="/login"><input name="username" placeholder="اسم المستخدم" required><input name="password" type="password" placeholder="كلمة السر" required><button>دخول</button></form></div></body></html>`;
-}
-function inboxHtml(user) {
-  const client = getClientById(user.client_id);
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>Inbox — ${client ? client.name : ''}</title><style>*{box-sizing:border-box}body{font-family:Tahoma,sans-serif;background:#ECE5DD;margin:0;height:100vh;display:flex;flex-direction:column}header{background:#075E54;color:#fff;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex:0 0 auto}header .bell{background:#25D366;border-radius:20px;padding:3px 11px;font-size:13px;margin-left:8px}header a{color:#fff;text-decoration:none;font-size:13px;opacity:.85}.wrap{display:flex;flex:1 1 auto;overflow:hidden}.list{width:310px;min-width:310px;background:#fff;border-left:1px solid #ddd;overflow-y:auto}.conv{padding:11px 14px;border-bottom:1px solid #f0f0f0;cursor:pointer;display:block}.conv:hover{background:#f5f5f5}.conv.active{background:#e8f5e9}.conv .num{font-weight:700;color:#111;display:block}.conv .prev{color:#666;font-size:12px;display:block;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px}.badge{background:#25D366;color:#fff;border-radius:11px;padding:1px 7px;font-size:11px;float:left}.staff{background:#FF9800;color:#fff;border-radius:11px;padding:1px 7px;font-size:11px}.chat{flex:1 1 auto;display:flex;flex-direction:column;background:#ECE5DD;overflow:hidden}.msgs{flex:1 1 auto;padding:16px;overflow-y:auto}.b{margin:6px 0;max-width:72%;padding:8px 12px;border-radius:10px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}.in{background:#fff;border:1px solid #eee;float:right}.out{background:#DCF8C6;float:left}.box{padding:10px 14px;background:#f0f0f0;display:flex;gap:8px;flex:0 0 auto}.box input{flex:1;padding:11px;border:1px solid #ccc;border-radius:22px;outline:none;font-size:14px}.box button{background:#075E54;color:#fff;border:0;padding:10px 22px;border-radius:22px;cursor:pointer;font-weight:700}#toast{position:fixed;bottom:22px;left:22px;background:#222;color:#fff;padding:13px 19px;border-radius:10px;opacity:0;transition:.3s;z-index:99;font-size:14px}#toast.show{opacity:.95}</style></head><body><header><div>💬 RX WA — ${client ? client.name : ''}</div><div><span class="bell" id="bell"></span><a href="/logout">خروج</a></div></header><div class="wrap"><div class="list" id="list"></div><div class="chat"><div class="msgs" id="msgs"><div style="color:#888;text-align:center;margin-top:40px">اختر محادثة من اليمين ←</div></div><div class="box"><input id="txt" placeholder="اكتب رداً..." onkeydown="if(event.key==='Enter')send()"><button onclick="send()">إرسال</button></div></div></div><div id="toast"></div><script>
-let cur=''; let lastTs=0;
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},3500);}
-async function load(){
-  try{
-    const r=await fetch('/api/conversations',{credentials:'include'}); const d=await r.json();
-    let maxTs=lastTs;
-    (d.conversations||[]).forEach(function(c){const last=c.last||{};const ts=new Date(last.at||0).getTime();if(!isNaN(ts)&&ts>maxTs)maxTs=ts;});
-    if(maxTs>lastTs)lastTs=maxTs;
-    const unread=(d.conversations||[]).reduce(function(s,c){return s+(c.unread||0);},0);
-    const staff=(d.conversations||[]).filter(function(c){return c.staffRequested;}).length;
-    document.getElementById('bell').textContent=(unread?(' 📨'+unread):'')+(staff?(' 🔔'+staff):'');
-    document.getElementById('list').innerHTML=(d.conversations||[]).map(function(c){
-      const last=c.last||{};const txt=(typeof last.text==='string')?last.text:(last.text&&last.text.body?last.text.body:'');
-      return '<div class="conv '+(c.num===cur?'active':'')+'" data-num="'+c.num+'"><div><div class="num">'+c.num+(c.staffRequested?' <span class="staff">موظف</span>':'')+'</div><div class="prev">'+(txt||'').slice(0,26)+'</div></div>'+(c.unread?'<span class="badge">'+c.unread+'</span>':'')+'</div>';
-    }).join('')||'<div style="padding:20px;color:#888">لا محادثات بعد</div>';
-  }catch(e){console.error('load err',e);}
-}
-document.getElementById('list').addEventListener('click',function(e){const el=e.target.closest('.conv');if(el&&el.dataset.num)openC(el.dataset.num);});
-async function openC(num){cur=num;try{const r=await fetch('/api/messages/'+encodeURIComponent(num),{credentials:'include'});const d=await r.json();document.getElementById('msgs').innerHTML=(d||[]).map(function(m){const t=(typeof m.text==='string')?m.text:(m.text&&m.text.body?m.text.body:'');return '<div class="b '+(m.direction||'in')+'">'+(t||'')+'</div>';}).join('');const ms=document.getElementById('msgs');ms.scrollTop=ms.scrollHeight;}catch(e){}load();}
-async function send(){if(!cur)return;const t=document.getElementById('txt').value;if(!t)return;await fetch('/api/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({num:cur,text:t})});document.getElementById('txt').value='';openC(cur);}
-load(); setInterval(load,4000);
-</script></body></html>`;
 }
 
 function adminHtml() {
