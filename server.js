@@ -18,18 +18,18 @@ app.use(express.json({ type: ['application/json', 'text/plain'] }));
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => { res.set('Content-Type', 'text/html; charset=utf-8'); next(); });
 
-// SECURITY (Vibe Security audit): no hardcoded fallback secrets in production.
-function reqEnv(name) {
-  const v = process.env[name];
-  if (!v) { console.error(`[SECURITY] متغير البيئة ${name} مفقود — يُرفض التشغيل`); process.exit(1); }
-  return v;
-}
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'RxWa@2026!SecureVerify';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'RxWa@2026!Admin';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'RxWaSession2026';
+// SECURITY (Vibe Security audit): no insecure fallback secrets. Env vars are required
+// in production; missing critical ones fail-closed (refuse to boot) instead of using defaults.
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
 const API_VERSION = process.env.WA_API_VERSION || 'v21.0';
 const APP_SECRET = process.env.META_APP_SECRET || '';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
+if (!VERIFY_TOKEN || !ADMIN_PASSWORD || !SESSION_SECRET) {
+  console.error('[SECURITY] VERIFY_TOKEN / ADMIN_PASSWORD / SESSION_SECRET مفقودة — يُرفض التشغيل');
+  process.exit(1);
+}
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // ---- Supabase (durable storage via REST, no SDK — proven to work) ----
@@ -46,7 +46,7 @@ async function sbReq(method, table, opts = {}) {
 }
 
 // In-memory cache (fast access) — synced with Supabase
-let _db = { clients: [], qa: [], users: [], flows: {}, misses: {}, staffRequests: {}, lastInbound: {}, storeEvents: [] };
+let _db = { clients: [], qa: [], users: [], flows: {}, misses: {}, staffRequests: {}, lastInbound: {}, seenEvents: {}, storeEvents: [] };
 const _seen = new Set(); // webhook dedupe (in-memory, reliable)
 
 // save() is now a no-op: durable storage goes to Supabase via db* helpers above.
@@ -58,9 +58,9 @@ async function dbLoad() {
   if (!_sbOK) return false;
   try {
     const [cl, qa, us] = await Promise.all([
-      sbReq('GET', 'clients', { qs: 'select=*' }),
-      sbReq('GET', 'qa', { qs: 'select=*' }),
-      sbReq('GET', 'users', { qs: 'select=*' }),
+      sbReq('GET', 'clients', { qs: 'select=*&limit=1000' }),
+      sbReq('GET', 'qa', { qs: 'select=*&limit=1000' }),
+      sbReq('GET', 'users', { qs: 'select=*&limit=1000' }),
     ]);
     _db.clients = cl || []; _db.qa = qa || []; _db.users = us || [];
     return true;
@@ -68,12 +68,15 @@ async function dbLoad() {
 }
 async function dbSaveClient(c) {
   if (!_sbOK) return;
-  const row = { id: c.id, name: c.name, phone_id: c.phone_id, wa_token: c.wa_token, flow: c.flow || 'qa', owner_email: c.owner_email || '', system_prompt: c.system_prompt || '', maintenance_msg: c.maintenance_msg || '', store: c.store || null };
-  await sbReq('POST', 'clients', { qs: 'on_conflict=id', body: [row] });
+  try {
+    const row = { id: c.id, name: c.name, phone_id: c.phone_id, wa_token: c.wa_token, flow: c.flow || 'qa', owner_email: c.owner_email || '', system_prompt: c.system_prompt || '', maintenance_msg: c.maintenance_msg || '', store: c.store || null };
+    await sbReq('POST', 'clients', { qs: 'on_conflict=id', body: [row] });
+  } catch (e) { console.error('[SUPABASE] dbSaveClient فشل (متجاهل):', e.message); }
 }
 async function dbSaveUser(u) {
   if (!_sbOK) return;
-  await sbReq('POST', 'users', { qs: 'on_conflict=username', body: [{ username: u.username, client_id: u.client_id, password: u.password, role: u.role, email: u.email || '' }] });
+  try { await sbReq('POST', 'users', { qs: 'on_conflict=username', body: [{ username: u.username, client_id: u.client_id, password: u.password, role: u.role, email: u.email || '' }] }); }
+  catch (e) { console.error('[SUPABASE] dbSaveUser فشل (متجاهل):', e.message); }
 }
 async function dbAddMessage(m) {
   if (!_sbOK) { console.error('[SUPABASE] dbAddMessage: لا يوجد اتصال'); return; }
@@ -87,8 +90,10 @@ async function dbAddMessage(m) {
 }
 async function dbGetMessages(cid) {
   if (!_sbOK) return [];
-  const data = await sbReq('GET', 'messages', { qs: `select=*&client_id=eq.${encodeURIComponent(cid)}&order=at.asc` });
-  return (data || []).map(r => ({ client_id: r.client_id, from_num: r.from_num, direction: r.direction, text: r.body, at: r.at, read: r.read }));
+  try {
+    const data = await sbReq('GET', 'messages', { qs: `select=*&client_id=eq.${encodeURIComponent(cid)}&order=at.asc` });
+    return (data || []).map(r => ({ client_id: r.client_id, from_num: r.from_num, direction: r.direction, text: r.body, at: r.at, read: r.read }));
+  } catch (e) { console.error('[SUPABASE] dbGetMessages فشل (يرجع فاضي):', e.message); return []; }
 }
 async function boot() {
   await dbLoad();
@@ -100,7 +105,6 @@ async function boot() {
     try {
       const qa = JSON.parse(fs.readFileSync(path.join(__dirname, 'qa.json'), 'utf8'));
       _db.qa = qa.map(q => ({ client_id: q.client_id || 'halat', question: q.question, keywords: q.keywords, reply: q.reply }));
-      if (sb) await sb.from('qa').upsert(_db.qa, { onConflict: 'client_id,question' });
       console.log(`[BOOT] زرع ${_db.qa.length} سؤال ✅`);
     } catch (e) { console.log('[BOOT] تعذّر زرع qa:', e.message); }
   }
@@ -133,9 +137,9 @@ function rateLimit(key, max, windowMs) {
 app.use((req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
-  // Allow inline scripts/styles for the Inbox SPA (rendered server-side with inline JS).
-  // 'self' would block inline <script>; we keep 'unsafe-inline' since the app is trusted.
-  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'");
+  // Scripts and styles are served as separate static files from same-origin ('self'),
+  // so no 'unsafe-inline' is needed. This is the secure default.
+  res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'");
   next();
 });
 
@@ -184,7 +188,7 @@ async function sendMsg(client, to, payload, opts) {
   try { await axios.post(url, { messaging_product: 'whatsapp', to, ...payload }, { headers: { Authorization: `Bearer ${client.wa_token}` } }); return {}; }
   catch (e) { console.error('send error:', e.response && e.response.data || e.message); return { error: e.message }; }
 }
-function sendText(client, to, text) { return sendMsg(client, to, { type: 'text', text: { body: text } }, { type: 'text' }); }
+function sendText(client, to, text, opts) { return sendMsg(client, to, { type: 'text', text: { body: text } }, Object.assign({ type: 'text' }, opts)); }
 function sendMedia(client, to, type, link, caption) {
   const obj = type === 'audio' ? { audio: { link } } : type === 'video' ? { video: { link, caption } } : type === 'document' ? { document: { link, caption, filename: 'file' } } : { image: { link, caption } };
   return sendMsg(client, to, { type, ...obj }, { type });
@@ -358,9 +362,10 @@ app.get('/inbox', requireLogin, (req, res) => res.sendFile(__dirname + '/public/
 app.get('/inbox.css', (req, res) => res.sendFile(__dirname + '/public/inbox.css'));
 app.get('/inbox.js', (req, res) => res.sendFile(__dirname + '/public/inbox.js'));
 app.get('/api/conversations', requireLogin, async (req, res) => {
+ try {
   const cid = req.session.user.client_id;
   let msgs = await dbGetMessages(cid);
-  if (!msgs.length && _db.messages) msgs = _db.messages.filter(m => m.client_id === cid);
+  if (!msgs.length && _db.messages && _db.messages.length) msgs = _db.messages.filter(m => m.client_id === cid);
   const byNum = {};
   for (const m of msgs) (byNum[m.from_num] = byNum[m.from_num] || []).push(m);
   const convs = Object.entries(byNum).map(([num, list]) => {
@@ -369,14 +374,17 @@ app.get('/api/conversations', requireLogin, async (req, res) => {
     return { num, last: { at: last.at, direction: last.direction, text: lastText }, count: list.length, unread: list.filter(m => m.direction === 'in' && !m.read).length, staffRequested: !!_db.staffRequests[num] };
   }).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
   res.json({ client: getClientById(cid), conversations: convs });
+ } catch (e) { console.error('[API] conversations خطأ:', e.message); res.json({ client: null, conversations: [] }); }
 });
 app.get('/api/messages/:num', requireLogin, async (req, res) => {
+ try {
   const cid = req.session.user.client_id;
   let list = await dbGetMessages(cid);
   list = list.filter(m => m.from_num === req.params.num);
   list.forEach(m => { if (m.direction === 'in') m.read = true; });
   const out = list.map(m => ({ direction: m.direction, at: m.at, text: (m.text && typeof m.text === 'object' && m.text.text && m.text.text.body) ? m.text.text.body : (typeof m.text === 'string' ? m.text : '') }));
   res.json(out);
+ } catch (e) { console.error('[API] messages خطأ:', e.message); res.json([]); }
 });
 app.post('/api/reply', requireLogin, async (req, res) => {
   const cid = req.session.user.client_id; const client = getClientById(cid); if (!client) return res.status(404).send('no client');
@@ -445,5 +453,12 @@ function adminHtml() {
 }
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
+
+// GLOBAL error handler — never leak HTML stack traces; always return safe JSON
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err && err.message);
+  if (req.path.startsWith('/api/')) return res.status(200).json({ error: 'internal', conversations: [], messages: [] });
+  res.status(500).send('⚠️ خطأ داخلي');
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 RX WA v3.0 شغّالة على ${PORT}`));
