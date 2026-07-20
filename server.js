@@ -73,9 +73,8 @@ async function dbSaveClient(c) {
   if (!_sbOK) return;
   try {
     const row = { name: c.name, phone_id: c.phone_id, wa_token: enc(c.wa_token), flow: c.flow || 'qa', system_prompt: c.system_prompt || '', maintenance_msg: c.maintenance_msg || '', store: c.store || null, owner_email: '' };
-    // PATCH (not POST+on_conflict) — reliably UPDATES the existing row by id
     await sbReq('PATCH', `clients?id=eq.${encodeURIComponent(c.id)}`, { body: row });
-  } catch (e) { console.error('[SUPABASE] dbSaveClient فشل (متجاهل):', e.message); }
+  } catch (e) { console.error('[SUPABASE] dbSaveClient خطأ صريح:', e.response && JSON.stringify(e.response.data), e.message); }
 }
 async function dbSaveUser(u) {
   if (!_sbOK) return;
@@ -457,7 +456,7 @@ app.get('/admin/api/stats', adminAuth, (req, res) => {
 // GET (not POST) so owner can trigger via browser click after login — no curl needed.
 // Runs server-side (server already holds SUPABASE_KEY + STORE_ENC_KEY) — no secret leaves the host.
 app.get('/admin/reencrypt', adminAuth, async (req, res) => {
-  try { await dbLoad(); let n = 0; for (const c of _db.clients) { await dbSaveClient(c); n++; } res.json({ ok: true, reencrypted: n }); }
+  try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
