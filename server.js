@@ -22,6 +22,7 @@ app.use(express.urlencoded({ extended: true }));
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const SESSION_SECRET = process.env.SESSION_SECRET || '';
+const STORE_ENC_KEY = (process.env.STORE_ENC_KEY || '').padEnd(32, '0').slice(0, 32); // 32-byte AES key
 const API_VERSION = process.env.WA_API_VERSION || 'v21.0';
 const APP_SECRET = process.env.META_APP_SECRET || '';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
@@ -29,6 +30,9 @@ if (!VERIFY_TOKEN || !ADMIN_PASSWORD || !SESSION_SECRET) {
   console.error('[SECURITY] VERIFY_TOKEN / ADMIN_PASSWORD / SESSION_SECRET مفقودة — يُرفض التشغيل');
   process.exit(1);
 }
+// AES-256 encrypt/decrypt for sensitive per-client tokens (wa_token) at rest in Supabase
+function enc(v) { if (!v) return ''; const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', STORE_ENC_KEY, iv); const e = Buffer.concat([c.update(String(v), 'utf8'), c.final()]); const t = c.getAuthTag(); return 'v1:' + iv.toString('hex') + ':' + t.toString('hex') + ':' + e.toString('hex'); }
+function dec(v) { if (!v || !v.startsWith('v1:')) return v || ''; try { const [, iv, tag, d] = v.split(':'); const c = crypto.createDecipheriv('aes-256-gcm', STORE_ENC_KEY, Buffer.from(iv, 'hex'), Buffer.from(tag, 'hex')); return Buffer.concat([c.update(Buffer.from(d, 'hex')), c.final()]).toString('utf8'); } catch { return ''; } }
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // ---- Supabase (durable storage via REST, no SDK — proven to work) ----
@@ -61,14 +65,14 @@ async function dbLoad() {
       sbReq('GET', 'qa', { qs: 'select=*&limit=1000' }),
       sbReq('GET', 'users', { qs: 'select=*&limit=1000' }),
     ]);
-    _db.clients = cl || []; _db.qa = qa || []; _db.users = us || [];
+    _db.clients = (cl || []).map(c => ({ ...c, wa_token: dec(c.wa_token) })); _db.qa = qa || []; _db.users = us || [];
     return true;
   } catch (e) { console.error('[SUPABASE] تحميل فشل:', e.message); return false; }
 }
 async function dbSaveClient(c) {
   if (!_sbOK) return;
   try {
-    const row = { id: c.id, name: c.name, phone_id: c.phone_id, wa_token: c.wa_token, flow: c.flow || 'qa', owner_email: c.owner_email || '', system_prompt: c.system_prompt || '', maintenance_msg: c.maintenance_msg || '', store: c.store || null };
+    const row = { id: c.id, name: c.name, phone_id: c.phone_id, wa_token: enc(c.wa_token), flow: c.flow || 'qa', system_prompt: c.system_prompt || '', maintenance_msg: c.maintenance_msg || '', store: c.store || null };
     await sbReq('POST', 'clients', { qs: 'on_conflict=id', body: [row] });
   } catch (e) { console.error('[SUPABASE] dbSaveClient فشل (متجاهل):', e.message); }
 }
@@ -242,7 +246,7 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
   console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"${hasImage ? ' [صورة]' : ''}${buttonId ? ' [زر:' + buttonId + ']' : ''}`);
   // MAINTENANCE MODE (mute) — temporary auto-reply, no Q&A/LLM
   if (process.env.MAINTENANCE_MODE === 'on') {
-    const info = client.maintenance_msg || '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (client.owner_email || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa';
+    const info = client.maintenance_msg || '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa';
     return sendText(client, from, info);
   }
   const lower = (text || '').toLowerCase();
@@ -424,12 +428,11 @@ app.post('/admin/user', adminAuth, (req, res) => {
   _db.users.push({ username, client_id, password: bcrypt.hashSync(password, 10), role: 'staff', email: email || '' }); save(_db); res.redirect('/admin');
 });
 app.post('/admin/client', adminAuth, (req, res) => {
-  const { id, name, phone_id, wa_token, system_prompt, owner_email } = req.body;
+  const { id, name, phone_id, wa_token, system_prompt } = req.body;
   if (!id || !name || !phone_id || !wa_token) return res.status(400).send('missing');
   if (_db.clients.find(c => c.id === id)) return res.status(400).send('موجود');
-  // owner_email = staff alert email for THIS client (per-client routing)
-  _db.clients.push({ id, name, phone_id, wa_token, flow: 'qa', owner_email: owner_email || '', system_prompt: system_prompt || 'أنت موظف خدمة عملاء. أجب بالعربية وباختصار.', store: null }); save(_db);
-  res.redirect('/admin');
+  // No per-client owner_email — alerts route to HALAT_STAFF_EMAIL (env) only.
+  _db.clients.push({ id, name, phone_id, wa_token, flow: 'qa', system_prompt: system_prompt || 'أنت موظف خدمة عملاء. أجب بالعربية وباختصار.', store: null }); save(_db); res.redirect('/admin');
 });
 app.post('/admin/store', adminAuth, (req, res) => {
   const { client_id, platform, key, store_id, domain } = req.body;
@@ -459,7 +462,7 @@ function adminHtml() {
   const clients = _db.clients.map(c => `<tr><td>${c.id}</td><td>${c.name}</td><td>${c.phone_id}</td><td>${c.store ? c.store.platform : '-'}</td></tr>`).join('') || '<tr><td colspan="4">لا يوجد</td></tr>';
   const users = _db.users.map(u => `<tr><td>${u.username}</td><td>${u.client_id}</td><td>${u.role}</td></tr>`).join('') || '<tr><td colspan="3">لا يوجد</td></tr>';
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>RX WA — إدارة</title><style>body{font-family:Tahoma;background:#FBF7F0;padding:24px;max-width:820px;margin:auto}input,select,textarea{padding:9px;margin:5px 0;width:100%;box-sizing:border-box;border:1px solid #ECE3D5;border-radius:8px}.card{background:#fff;border:1px solid #ECE3D5;border-radius:14px;padding:20px;margin-bottom:18px}button{background:#25D366;color:#fff;border:0;padding:10px 20px;border-radius:8px;cursor:pointer}table{width:100%;border-collapse:collapse}td,th{border:1px solid #eee;padding:6px}</style></head><body><h1>RX WA — إدارة</h1>
-  <div class="card"><h3>إضافة عميل (رقم + توكن + تخصيص)</h3><form method="POST" action="/admin/client"><input name="id" placeholder="معرف العميل (store_a)" required><input name="name" placeholder="اسم المتجر" required><input name="phone_id" placeholder="Phone ID من ميتا" required><input name="wa_token" placeholder="WABA Token" required><input name="owner_email" placeholder="إيميل التنبيه"><textarea name="system_prompt" placeholder="وصف المتجر (يستخدمه الذكاء الاصطناعي للرد)" rows="3"></textarea><button>إضافة عميل</button></form></div>
+  <div class="card"><h3>إضافة عميل (رقم + توكن + تخصيص)</h3><form method="POST" action="/admin/client"><input name="id" placeholder="معرف العميل (store_a)" required><input name="name" placeholder="اسم المتجر" required><input name="phone_id" placeholder="Phone ID من ميتا" required><input name="wa_token" placeholder="WABA Token" required><textarea name="system_prompt" placeholder="وصف المتجر (يستخدمه الذكاء الاصطناعي للرد)" rows="3"></textarea><button>إضافة عميل</button></form></div>
   <div class="card"><h3>ربط متجر (زد/سلة/شوبيفاي)</h3><form method="POST" action="/admin/store"><input name="client_id" placeholder="معرف العميل" required><select name="platform"><option value="zid">زد</option><option value="salla">سلة</option><option value="shopify">شوبيفاي</option><option value="generic">موقع خاص</option></select><input name="key" placeholder="Merchant Key / Secret"><input name="store_id" placeholder="Store ID / Domain"><button>ربط</button></form></div>
   <div class="card"><h3>بث جماعي (قالب)</h3><form method="POST" action="/admin/broadcast"><input name="client_id" placeholder="معرف العميل" required><input name="template" placeholder="اسم القالب المعتمد" required><textarea name="recipients" placeholder="أرقام العملاء (رقم بكل سطر)" rows="4"></textarea><button>إرسال بث</button></form></div>
   <div class="card"><h3>المستخدمون</h3><table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
