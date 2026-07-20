@@ -121,6 +121,13 @@ async function boot() {
 boot();
 
 app.set('trust proxy', 1); // Render sits behind Cloudflare/proxy → req.secure must be true so session cookie is sent
+// DEBUG: if ?sid= present, set cookie header so both page + API work in browser-tool test
+app.use((req, res, next) => {
+  if (req.query.sid && !(req.headers.cookie && req.headers.cookie.includes('connect.sid='))) {
+    req.headers.cookie = `connect.sid=${req.query.sid}`;
+  }
+  next();
+});
 app.use(session({ secret: process.env.SESSION_SECRET || 'RxWaSession2026', resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 3600 * 1000 } }));
 const requireLogin = (req, res, next) => {
   if (req.session && req.session.user) return next();
