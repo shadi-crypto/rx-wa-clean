@@ -16,7 +16,6 @@ require('dotenv').config();
 const app = express();
 app.use(express.json({ type: ['application/json', 'text/plain'] }));
 app.use(express.urlencoded({ extended: true }));
-app.use((req, res, next) => { res.set('Content-Type', 'text/html; charset=utf-8'); next(); });
 
 // SECURITY (Vibe Security audit): no insecure fallback secrets. Env vars are required
 // in production; missing critical ones fail-closed (refuse to boot) instead of using defaults.
