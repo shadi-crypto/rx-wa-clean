@@ -453,8 +453,9 @@ app.get('/admin/api/stats', adminAuth, (req, res) => {
   res.json({ total: msgs.length, clients: _db.clients.length, byDay });
 });
 // SECURITY MIGRATION: re-encrypt wa_token at rest + drop owner_email.
+// GET (not POST) so owner can trigger via browser click after login — no curl needed.
 // Runs server-side (server already holds SUPABASE_KEY + STORE_ENC_KEY) — no secret leaves the host.
-app.post('/admin/reencrypt', adminAuth, async (req, res) => {
+app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); let n = 0; for (const c of _db.clients) { await dbSaveClient(c); n++; } res.json({ ok: true, reencrypted: n }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
