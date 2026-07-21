@@ -11,7 +11,18 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 const Fuse = require('fuse.js');
-require('dotenv').config();
+// Manual .env loader — no dotenv/dotenvx dependency (avoids hijacked package)
+(function () {
+  try {
+    const ep = require('path').join(__dirname, '.env');
+    if (!fs.existsSync(ep)) return;
+    const txt = fs.readFileSync(ep, 'utf8');
+    for (const l of txt.split('\n')) {
+      const m = l.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+    }
+  } catch (e) {}
+})();
 
 const app = express();
 app.use(express.json({ type: ['application/json', 'text/plain'] }));
@@ -32,7 +43,7 @@ if (!VERIFY_TOKEN || !ADMIN_PASSWORD || !SESSION_SECRET) {
 }
 // AES-256 encrypt/decrypt for sensitive per-client tokens (wa_token) at rest in Supabase
 function enc(v) { if (!v) return ''; const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', STORE_ENC_KEY, iv); const e = Buffer.concat([c.update(String(v), 'utf8'), c.final()]); const t = c.getAuthTag(); return 'v1:' + iv.toString('hex') + ':' + t.toString('hex') + ':' + e.toString('hex'); }
-function dec(v) { if (!v || !v.startsWith('v1:')) return v || ''; try { const [, iv, tag, d] = v.split(':'); const c = crypto.createDecipheriv('aes-256-gcm', STORE_ENC_KEY, Buffer.from(iv, 'hex'), Buffer.from(tag, 'hex')); return Buffer.concat([c.update(Buffer.from(d, 'hex')), c.final()]).toString('utf8'); } catch { return ''; } }
+function dec(v) { if (!v || !v.startsWith('v1:')) return v || ''; try { const [, iv, tag, d] = v.split(':'); const c = crypto.createDecipheriv('aes-256-gcm', STORE_ENC_KEY, Buffer.from(iv, 'hex'), Buffer.from(tag, 'hex')); return Buffer.concat([c.update(Buffer.from(d, 'hex')), c.final()]).toString('utf8'); } catch { return ''; }
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // ---- Supabase (durable storage via REST, no SDK — proven to work) ----
@@ -447,6 +458,24 @@ app.post('/admin/broadcast', adminAuth, async (req, res) => {
   for (const n of nums) { await sendTemplate(client, normalizePhone(n), template || 'cart_reminder', 'ar', [{ type: 'body', parameters: [{ type: 'text', text: client.name }] }]); sent++; await new Promise(r => setTimeout(r, 300)); }
   res.json({ ok: true, sent });
 });
+// SECURITY: owner changes OWN password
+app.post('/admin/password', adminAuth, (req, res) => {
+  const { old_p, new_p } = req.body;
+  if (!new_p || new_p.length < 8) return res.status(400).send('كلمة السر ضعيفة (8+ حروف)');
+  const u = _db.users.find(x => x.username === req.session.user.username);
+  if (u && old_p && !bcrypt.compareSync(old_p, u.password)) return res.status(401).send('كلمة السر القديمة غلط');
+  u.password = bcrypt.hashSync(new_p, 10); save(_db); res.redirect('/admin');
+});
+// SECURITY: owner issues/rotates a per-client staff login (encrypted bcrypt)
+app.post('/admin/client/creds', adminAuth, (req, res) => {
+  const { client_id, username, password } = req.body;
+  if (!client_id || !username) return res.status(400).send('missing');
+  if (password && password.length < 8) return res.status(400).send('كلمة السر ضعيفة (8+ حروف)');
+  let u = _db.users.find(x => x.username === username);
+  if (u) { if (password) u.password = bcrypt.hashSync(password, 10); u.client_id = client_id; }
+  else { if (!password) return res.status(400).send('كلمة السر مطلوبة لعميل جديد'); _db.users.push({ username, client_id, password: bcrypt.hashSync(password, 10), role: 'staff', email: '' }); }
+  save(_db); res.redirect('/admin');
+});
 app.get('/admin/api/stats', adminAuth, (req, res) => {
   const cid = req.query.client_id; const msgs = cid ? _db.messages.filter(m => m.client_id === cid) : _db.messages;
   const byDay = {}; for (const m of msgs) { const d = m.at.slice(0, 10); byDay[d] = (byDay[d] || 0) + 1; }
@@ -472,7 +501,10 @@ function adminHtml() {
   <div class="card"><h3>إضافة عميل (رقم + توكن + تخصيص)</h3><form method="POST" action="/admin/client"><input name="id" placeholder="معرف العميل (store_a)" required><input name="name" placeholder="اسم المتجر" required><input name="phone_id" placeholder="Phone ID من ميتا" required><input name="wa_token" placeholder="WABA Token" required><textarea name="system_prompt" placeholder="وصف المتجر (يستخدمه الذكاء الاصطناعي للرد)" rows="3"></textarea><button>إضافة عميل</button></form></div>
   <div class="card"><h3>ربط متجر (زد/سلة/شوبيفاي)</h3><form method="POST" action="/admin/store"><input name="client_id" placeholder="معرف العميل" required><select name="platform"><option value="zid">زد</option><option value="salla">سلة</option><option value="shopify">شوبيفاي</option><option value="generic">موقع خاص</option></select><input name="key" placeholder="Merchant Key / Secret"><input name="store_id" placeholder="Store ID / Domain"><button>ربط</button></form></div>
   <div class="card"><h3>بث جماعي (قالب)</h3><form method="POST" action="/admin/broadcast"><input name="client_id" placeholder="معرف العميل" required><input name="template" placeholder="اسم القالب المعتمد" required><textarea name="recipients" placeholder="أرقام العملاء (رقم بكل سطر)" rows="4"></textarea><button>إرسال بث</button></form></div>
-  <div class="card"><h3>المستخدمون</h3><table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
+  <div class="card"><h3>المستخدمون</h3>
+  <div class="card"><h3>تغيير باس الوورد (صاحب المتجر)</h3><form method="POST" action="/admin/password"><input name="old_p" type="password" placeholder="الباس القديم" required><input name="new_p" type="password" placeholder="باس وورد جديد (8+)" required><button>تغيير</button></form></div>
+  <div class="card"><h3>باس دخول مخصص لكل عميل (مشفّر)</h3><form method="POST" action="/admin/client/creds"><input name="client_id" placeholder="معرف العميل" required><input name="username" placeholder="اسم مستخدم العميل" required><input name="password" type="password" placeholder="باس وورد (8+)" ><button>إضافة/تحديث</button></form></div>
+<table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
   <div class="card"><h3>العملاء</h3><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
 }
 
@@ -485,4 +517,5 @@ app.use((err, req, res, next) => {
   res.status(500).send('⚠️ خطأ داخلي');
 });
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 RX WA v3.0 شغّالة على ${PORT}`));
+app.listen(PORT, () => console.log("RX WA v3.0 listening on " + PORT));
+}
