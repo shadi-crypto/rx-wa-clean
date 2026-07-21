@@ -43,7 +43,7 @@ if (!VERIFY_TOKEN || !ADMIN_PASSWORD || !SESSION_SECRET) {
 }
 // AES-256 encrypt/decrypt for sensitive per-client tokens (wa_token) at rest in Supabase
 function enc(v) { if (!v) return ''; const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', STORE_ENC_KEY, iv); const e = Buffer.concat([c.update(String(v), 'utf8'), c.final()]); const t = c.getAuthTag(); return 'v1:' + iv.toString('hex') + ':' + t.toString('hex') + ':' + e.toString('hex'); }
-function dec(v) { if (!v || !v.startsWith('v1:')) return v || ''; try { const [, iv, tag, d] = v.split(':'); const c = crypto.createDecipheriv('aes-256-gcm', STORE_ENC_KEY, Buffer.from(iv, 'hex'), Buffer.from(tag, 'hex')); return Buffer.concat([c.update(Buffer.from(d, 'hex')), c.final()]).toString('utf8'); } catch { return ''; }
+function dec(v) { if (!v || !v.startsWith('v1:')) return v || ''; try { const [, iv, tag, d] = v.split(':'); const c = crypto.createDecipheriv('aes-256-gcm', STORE_ENC_KEY, Buffer.from(iv, 'hex'), Buffer.from(tag, 'hex')); return Buffer.concat([c.update(Buffer.from(d, 'hex')), c.final()]).toString('utf8'); } catch (e) { return ''; } }
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // ---- Supabase (durable storage via REST, no SDK — proven to work) ----
@@ -52,7 +52,7 @@ const SB_KEY = process.env.SUPABASE_KEY || '';   // service_role key
 const _sbOK = !!(SB_URL && SB_KEY);
 if (_sbOK) console.log('[BOOT-DIAG] Supabase REST جاهز ✅ (' + SB_URL + ')');
 else console.log('[BOOT-DIAG] ⚠️ SUPABASE_URL/KEY فاضي → وضع الذاكرة المؤقت');
-const _sbHeaders = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };
+const _sbHeaders = { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' };
 async function sbReq(method, table, opts = {}) {
   const url = `${SB_URL}/rest/v1/${table}` + (opts.qs ? `?${opts.qs}` : '');
   const r = await axios({ method, url, headers: _sbHeaders, data: opts.body });
@@ -518,4 +518,3 @@ app.use((err, req, res, next) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("RX WA v3.0 listening on " + PORT));
-}
