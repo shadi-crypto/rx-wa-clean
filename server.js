@@ -494,6 +494,7 @@ app.get('/admin/api/stats', adminAuth, (req, res) => {
 // Runs server-side (server already holds SUPABASE_KEY + STORE_ENC_KEY) — no secret leaves the host.
 app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 // SECURITY: strip any leaked owner_email / old staff email from stored maintenance_msg in Supabase
 app.get('/admin/fix-maintenance', adminAuth, async (req, res) => {
