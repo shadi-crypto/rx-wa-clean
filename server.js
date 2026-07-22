@@ -103,9 +103,14 @@ async function dbAddMessage(m) {
   } catch (e) { console.error('[SUPABASE] insert فشل:', e.message); }
 }
 async function dbGetMessages(cid) {
-  if (!_sbOK) return [];
+  if (!_sbOK) {
+    // fallback to in-memory cache
+    if (cid) return _db.messages.filter(m => m.client_id === cid);
+    return _db.messages;
+  }
   try {
-    const data = await sbReq('GET', 'messages', { qs: `select=*&client_id=eq.${encodeURIComponent(cid)}&order=at.asc` });
+    const qs = cid ? `select=*&client_id=eq.${encodeURIComponent(cid)}&order=at.asc` : `select=*&order=at.asc`;
+    const data = await sbReq('GET', 'messages', { qs });
     return (data || []).map(r => ({ client_id: r.client_id, from_num: r.from_num, direction: r.direction, text: r.body, at: r.at, read: r.read }));
   } catch (e) { console.error('[SUPABASE] dbGetMessages فشل (يرجع فاضي):', e.message); return []; }
 }
