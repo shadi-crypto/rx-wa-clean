@@ -116,7 +116,7 @@ async function dbGetMessages(cid) {
 }
 async function boot() {
   await dbLoad();
-  if (!_db.clients.find(c => c.id === 'halat')) {
+  if (process.env.SEED_HALAT === '1' && !_db.clients.find(c => c.id === 'halat')) {
     const c = { id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', maintenance_msg: '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null };
     _db.clients.push(c); await dbSaveClient(c);
   }
@@ -453,6 +453,24 @@ app.post('/admin/client', adminAuth, (req, res) => {
   // No per-client owner_email — alerts route to HALAT_STAFF_EMAIL (env) only.
   _db.clients.push({ id, name, phone_id, wa_token, flow: 'qa', system_prompt: system_prompt || 'أنت موظف خدمة عملاء. أجب بالعربية وباختصار.', store: null }); save(_db); res.redirect('/admin');
 });
+// SECURITY: owner removes a client + its staff users + its messages (unlink from this platform)
+app.post('/admin/client/delete', adminAuth, async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).send('missing');
+  try {
+    // remove from Supabase (clients, users, messages for this client_id)
+    if (_sbOK) {
+      await sbReq('DELETE', `clients?id=eq.${encodeURIComponent(id)}`);
+      await sbReq('DELETE', `users?client_id=eq.${encodeURIComponent(id)}`);
+      await sbReq('DELETE', `messages?client_id=eq.${encodeURIComponent(id)}`);
+    }
+    _db.clients = _db.clients.filter(c => c.id !== id);
+    _db.users = _db.users.filter(u => u.client_id !== id);
+    _db.messages = _db.messages.filter(m => m.client_id !== id);
+    save(_db);
+    res.redirect('/admin');
+  } catch (e) { res.status(500).send('خطأ: ' + e.message); }
+});
 app.post('/admin/store', adminAuth, (req, res) => {
   const { client_id, platform, key, store_id, domain } = req.body;
   const client = getClientById(client_id); if (!client) return res.status(404).send('no client');
@@ -522,7 +540,8 @@ function adminHtml() {
   <div class="card"><h3>تغيير باس الوورد (صاحب المتجر)</h3><form method="POST" action="/admin/password"><input name="old_p" type="password" placeholder="الباس القديم" required><input name="new_p" type="password" placeholder="باس وورد جديد (8+)" required><button>تغيير</button></form></div>
   <div class="card"><h3>باس دخول مخصص لكل عميل (مشفّر)</h3><form method="POST" action="/admin/client/creds"><input name="client_id" placeholder="معرف العميل" required><input name="username" placeholder="اسم مستخدم العميل" required><input name="password" type="password" placeholder="باس وورد (8+)" ><button>إضافة/تحديث</button></form></div>
 <table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
-  <div class="card"><h3>العملاء</h3><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
+  <div class="card"><h3>العملاء</h3>
+  <div class="card"><h3>إلغاء ربط عميل (حذف من المنصة)</h3><form method="POST" action="/admin/client/delete"><input name="id" placeholder="معرف العميل (مثل halat)" required><button style="background:#dc3545">حذف العميل + محادثاته + مستخدميه</button></form></div><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
 }
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
