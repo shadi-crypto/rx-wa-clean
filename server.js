@@ -392,9 +392,10 @@ app.get('/inbox.css', (req, res) => res.sendFile(__dirname + '/public/inbox.css'
 app.get('/inbox.js', (req, res) => res.sendFile(__dirname + '/public/inbox.js'));
 app.get('/api/conversations', requireLogin, async (req, res) => {
  try {
-  const cid = req.session.user.client_id;
+  const isOwner = req.session.user.role === 'owner';
+  const cid = isOwner ? null : req.session.user.client_id;
   let msgs = await dbGetMessages(cid);
-  if (!msgs.length && _db.messages && _db.messages.length) msgs = _db.messages.filter(m => m.client_id === cid);
+  if (!msgs.length && _db.messages && _db.messages.length) msgs = _db.messages.filter(m => cid ? m.client_id === cid : true);
   const byNum = {};
   for (const m of msgs) (byNum[m.from_num] = byNum[m.from_num] || []).push(m);
   const convs = Object.entries(byNum).map(([num, list]) => {
@@ -402,14 +403,16 @@ app.get('/api/conversations', requireLogin, async (req, res) => {
     const lastText = (last && last.text && typeof last.text === 'string') ? last.text : '';
     return { num, last: { at: last.at, direction: last.direction, text: lastText }, count: list.length, unread: list.filter(m => m.direction === 'in' && !m.read).length, staffRequested: !!_db.staffRequests[num] };
   }).sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
-  res.json({ client: getClientById(cid), conversations: convs });
- } catch (e) { console.error('[API] conversations خطأ:', e.message); res.json({ client: null, conversations: [] }); }
+  const client = cid ? getClientById(cid) : (_db.clients[0] || null);
+  res.json({ client, conversations: convs, isOwner });
+ } catch (e) { console.error('[API] conversations خطأ:', e.message); res.json({ client: null, conversations: [], isOwner: false }); }
 });
 app.get('/api/messages/:num', requireLogin, async (req, res) => {
  try {
-  const cid = req.session.user.client_id;
+  const isOwner = req.session.user.role === 'owner';
+  const cid = isOwner ? null : req.session.user.client_id;
   let list = await dbGetMessages(cid);
-  list = list.filter(m => m.from_num === req.params.num);
+  list = list.filter(m => (cid ? m.client_id === cid : true) && m.from_num === req.params.num);
   list.forEach(m => { if (m.direction === 'in') m.read = true; });
   const out = list.map(m => ({ direction: m.direction, at: m.at, text: (typeof m.text === 'string' ? m.text : '') }));
   res.json(out);

@@ -12,7 +12,7 @@ async function loadConvs() {
   try {
     const r = await fetch('/api/conversations');
     const d = await r.json();
-    $('#clientName').textContent = (d.client && d.client.name) || 'صندوق الوارد';
+    $('#clientName').textContent = (d.isOwner ? 'صندوق الوارد (مالك)' : (d.client && d.client.name)) || 'صندوق الوارد';
     convs = (d.conversations || []).slice().sort((a, b) => new Date(b.last.at) - new Date(a.last.at));
     renderConvs();
   } catch (e) { toast('تعذّر تحميل المحادثات'); }
