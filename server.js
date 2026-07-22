@@ -505,7 +505,6 @@ app.get('/admin/fix-maintenance', adminAuth, async (req, res) => {
     res.json({ ok: true, maintenance_msg: newMsg });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-});
 
 // ---------- HTML ----------
 function loginHtml() {
