@@ -453,22 +453,31 @@ app.post('/admin/client', adminAuth, (req, res) => {
   // No per-client owner_email — alerts route to HALAT_STAFF_EMAIL (env) only.
   _db.clients.push({ id, name, phone_id, wa_token, flow: 'qa', system_prompt: system_prompt || 'أنت موظف خدمة عملاء. أجب بالعربية وباختصار.', store: null }); save(_db); res.redirect('/admin');
 });
-// SECURITY: owner removes a client + its staff users + its messages (unlink from this platform)
-app.post('/admin/client/delete', adminAuth, async (req, res) => {
+// SECURITY: owner UNLINKS a client (stops bot by dropping wa_token) — keeps conversations + client record
+app.post('/admin/client/unlink', adminAuth, async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).send('missing');
   try {
-    // remove from Supabase (clients, users, messages for this client_id)
-    if (_sbOK) {
-      await sbReq('DELETE', `clients?id=eq.${encodeURIComponent(id)}`);
-      await sbReq('DELETE', `users?client_id=eq.${encodeURIComponent(id)}`);
-      await sbReq('DELETE', `messages?client_id=eq.${encodeURIComponent(id)}`);
-    }
-    _db.clients = _db.clients.filter(c => c.id !== id);
-    _db.users = _db.users.filter(u => u.client_id !== id);
-    _db.messages = _db.messages.filter(m => m.client_id !== id);
+    const c = getClientById(id);
+    if (!c) return res.status(404).send('لا يوجد');
+    c.wa_token = ''; // bot stops; Meta account stays with client
+    if (_sbOK) { await dbSaveClient(c); }
+    const i = _db.clients.findIndex(x => x.id === id); if (i >= 0) _db.clients[i] = c;
     save(_db);
     res.redirect('/admin');
+  } catch (e) { res.status(500).send('خطأ: ' + e.message); }
+});
+// SECURITY: export a client's conversations as CSV (kept locally for client handoff)
+app.get('/admin/client/export', adminAuth, async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).send('missing');
+  try {
+    const msgs = (await dbGetMessages(id));
+    let csv = 'from_num,direction,at,text\n';
+    for (const m of msgs) csv += `"${(m.from_num||'').replace(/"/g,'"')}","${m.direction||''}","${m.at||''}","${(m.text||'').replace(/"/g,'"')}"\n`;
+    res.setHeader('Content-Disposition', `attachment; filename="${id}-conversations.csv"`);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.send('\ufeff' + csv);
   } catch (e) { res.status(500).send('خطأ: ' + e.message); }
 });
 app.post('/admin/store', adminAuth, (req, res) => {
@@ -541,7 +550,8 @@ function adminHtml() {
   <div class="card"><h3>باس دخول مخصص لكل عميل (مشفّر)</h3><form method="POST" action="/admin/client/creds"><input name="client_id" placeholder="معرف العميل" required><input name="username" placeholder="اسم مستخدم العميل" required><input name="password" type="password" placeholder="باس وورد (8+)" ><button>إضافة/تحديث</button></form></div>
 <table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
   <div class="card"><h3>العملاء</h3>
-  <div class="card"><h3>إلغاء ربط عميل (حذف من المنصة)</h3><form method="POST" action="/admin/client/delete"><input name="id" placeholder="معرف العميل (مثل halat)" required><button style="background:#dc3545">حذف العميل + محادثاته + مستخدميه</button></form></div><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
+  <div class="card"><h3>فك ربط عميل (يوقف البوت، يبقي المحادثات)</h3><form method="POST" action="/admin/client/unlink"><input name="id" placeholder="معرف العميل (مثل halat)" required><button style="background:#dc3545">فك الربط من التطبيق</button></form></div>
+  <div class="card"><h3>تصدير محادثات عميل (CSV)</h3><a href="/admin/client/export?id=halat"><button>⬇️ تحميل محادثات halat</button></a></div><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
 }
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
