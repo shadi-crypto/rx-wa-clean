@@ -467,6 +467,22 @@ app.post('/admin/client/unlink', adminAuth, async (req, res) => {
     res.redirect('/admin');
   } catch (e) { res.status(500).send('خطأ: ' + e.message); }
 });
+// SECURITY: owner RELINKS a client (restores wa_token from env HALAT_WA_TOKEN) — re-enables bot
+app.post('/admin/client/relink', adminAuth, async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).send('missing');
+  try {
+    const c = getClientById(id);
+    if (!c) return res.status(404).send('لا يوجد');
+    const tok = process.env.HALAT_WA_TOKEN;
+    if (!tok) return res.status(400).send('لا يوجد HALAT_WA_TOKEN في البيئة');
+    c.wa_token = tok;
+    if (_sbOK) { await dbSaveClient(c); }
+    const i = _db.clients.findIndex(x => x.id === id); if (i >= 0) _db.clients[i] = c;
+    save(_db);
+    res.redirect('/admin');
+  } catch (e) { res.status(500).send('خطأ: ' + e.message); }
+});
 // SECURITY: export a client's conversations as CSV (kept locally for client handoff)
 app.get('/admin/client/export', adminAuth, async (req, res) => {
   const { id } = req.query;
@@ -546,7 +562,7 @@ function adminHtml() {
   <div class="card"><h3>٢) ربط متجر العميل (زد / سلة / شوبيفاي)</h3><form method="POST" action="/admin/store"><div class="row"><input name="client_id" placeholder="معرف العميل" required><select name="platform"><option value="zid">زد</option><option value="salla">سلة</option><option value="shopify">شوبيفاي</option><option value="generic">موقع خاص</option></select></div><div class="row"><input name="key" placeholder="Merchant Key / Secret"><input name="store_id" placeholder="Store ID / Domain"></div><button>ربط المتجر</button></form></div>
   <div class="card"><h3>٣) بث جماعي (قالب معتمد)</h3><form method="POST" action="/admin/broadcast"><div class="row"><input name="client_id" placeholder="معرف العميل" required><input name="template" placeholder="اسم القالب المعتمد" required></div><textarea name="recipients" placeholder="أرقام العملاء (رقم واحد بكل سطر)" rows="4"></textarea><button>إرسال البث</button></form></div>
   <div class="card"><h3>٤) المستخدمون وكلمات السر</h3><form method="POST" action="/admin/password"><div class="row"><input name="old_p" type="password" placeholder="كلمة السر القديمة" required><input name="new_p" type="password" placeholder="كلمة سر جديدة (8+ حروف)" required></div><button>تغيير باس وورد المالك</button></form><hr style="border:0;border-top:1px solid #eee;margin:16px 0"><form method="POST" action="/admin/client/creds"><div class="row"><input name="client_id" placeholder="معرف العميل" required><input name="username" placeholder="اسم مستخدم الموظف" required><input name="password" type="password" placeholder="باس وورد (8+)"></div><button>إضافة/تحديث دخول موظف العميل</button></form><div class="info">كل عميل له دخول منفصل ومشفّر ومعزول عن باقي العملاء.</div><table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
-  <div class="card"><h3>٥) العملاء والربط</h3><form method="POST" action="/admin/client/unlink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button class="danger">فك الربط من التطبيق (يوقف البوت ويبقي المحادثات)</button></div></form><div class="info" style="margin-top:12px">تصدير محادثات العميل قبل فك الربط:</div><a class="export" href="/admin/client/export?id=halat"><button class="export">⬇️ تحميل محادثات halat (CSV)</button></a><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
+  <div class="card"><h3>٥) العملاء والربط</h3><form method="POST" action="/admin/client/unlink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button class="danger">فك الربط من التطبيق (يوقف البوت ويبقي المحادثات)</button></div></form><form method="POST" action="/admin/client/relink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button style="background:#0d6efd">إعادة الربط (يرجّع التوكن ويشغّل البوت)</button></div></form><div class="info" style="margin-top:12px">تصدير محادثات العميل قبل فك الربط:</div><a class="export" href="/admin/client/export?id=halat"><button class="export">⬇️ تحميل محادثات halat (CSV)</button></a><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></body></html>`;
 }
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
