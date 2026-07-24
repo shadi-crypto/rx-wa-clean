@@ -298,10 +298,16 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
 // SCOPE GUARD: ask Groq to judge if the reply strays outside Halat pets store domain
 async function isOutOfScope(userText, botReply) {
   if (!GROQ_KEY) return false;
-  const judgePrompt = `أنت حكم. هل الرد التالي خارج نطاق "متجر هالات للحيوانات (قطط، كلاب، طيور، أسماك، أكسسوارات حيوانات)"؟ الرد يجب أن يكون فقط عن منتجات هالات أو خدمة العملاء (شحن، استرجاع، دفع، طلبات).
+  const judgePrompt = `أنت حكم. مهمتك: تحدد هل المحادثة ضمن نطاق "متجر هالات للحيوانات (قطط، كلاب، طيور، أسماك، أكسسوارات حيوانات)" وخدمة عملائه (الشحن، الاسترجاع، الدفع، متابعة الطلبات، أوقات العمل).
+
+القواعد:
+- إذا سأل العميل عن منتجات هالات أو الحيوانات الأليفة أو خدمات المتجر → الرد "لا" (ضمن النطاق).
+- إذا سأل العميل عن موضوع عام لا علاقة له بالحيوانات/المتجر (علوم، تاريخ، رياضيات، سياسة، طبخ عام...) → الرد "نعم" (خارج النطاق).
+- الرد اللي يرفض ويوجه للحديث عن هالات = ضمن النطاق (رد "لا").
+
 سؤال العميل: ${userText}
 رد البوت: ${botReply}
-أجب بكلمة واحدة فقط: "نعم" (إذا خارج النطاق) أو "لا" (إذا ضمن النطاق).`;
+أجب بكلمة واحدة فقط: "نعم" (خارج النطاق) أو "لا" (ضمن النطاق).`;
   try {
     const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
       { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: judgePrompt }], temperature: 0, max_tokens: 5 },
