@@ -247,15 +247,18 @@ function sendTemplate(client, to, name, lang, components) {
 }
 
 // ---------- LLM (Groq) per client ----------
+function logLLM(s) { try { _db.llmLogs = _db.llmLogs || []; _db.llmLogs.push({ at: Date.now(), msg: s }); if (_db.llmLogs.length > 50) _db.llmLogs = _db.llmLogs.slice(-50); save(_db); } catch (e) {} }
 async function askLLM(client, text) {
-  if (!GROQ_KEY) { console.log('[LLM] ما فيه GROQ_API_KEY — تجاهل'); return null; }
+  if (!GROQ_KEY) { console.log('[LLM] ما فيه GROQ_API_KEY — تجاهل'); logLLM('no GROQ_KEY'); return null; }
   const prompt = (client.system_prompt || 'أنت موظف خدمة عملاء مفيد. أجب بالعربية وباختصار.') + '\nالعميل يسأل: ' + text + '\nرد باختصار. لو ما تعرف الجواب قل "موظف".';
   try {
     const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
       { model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: client.system_prompt || 'أنت موظف خدمة عملاء' }, { role: 'user', content: text }], temperature: 0.4, max_tokens: 300 },
       { headers: { Authorization: `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' } });
-    return r.data.choices[0].message.content.trim();
-  } catch (e) { console.error('[LLM] خطأ:', e.response && e.response.data || e.message); return null; }
+    const ans = r.data.choices[0].message.content.trim();
+    logLLM('OK: ' + ans.slice(0, 80));
+    return ans;
+  } catch (e) { console.error('[LLM] خطأ:', e.response && e.response.data || e.message); logLLM('ERROR: ' + (e.response && JSON.stringify(e.response.data) || e.message)); return null; }
 }
 
 // ---------- Q&A ----------
@@ -295,7 +298,14 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
   const reply = findReply(client, text);
   if (reply) { delete _db.misses[from]; save(_db); return sendText(client, from, reply); }
   // LLM fallback (per-client system_prompt)
-  const llm = await askLLM(client, text);
+  let llm = null;
+  try {
+    llm = await askLLM(client, text);
+    console.log(`[LLM] reply for "${text}": ${llm ? llm.slice(0, 60) + '...' : 'NULL/empty'}`);
+  } catch (e) {
+    console.error('[LLM] exception:', e.message);
+    llm = null;
+  }
   if (llm && !llm.toLowerCase().includes('موظف')) { delete _db.misses[from]; save(_db); return sendText(client, from, llm); }
   const miss = (_db.misses[from] || 0) + 1; _db.misses[from] = miss; save(_db);
   if (miss >= 3) { delete _db.misses[from]; _db.staffRequests[from] = true; save(_db); await alertStaff(client, from, text); return sendText(client, from, '🙋 يبدو أن سؤالك خارج نطاق المعرفة. تواصل مباشرة مع الموظف.'); }
@@ -554,6 +564,18 @@ app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// SECURITY: show last LLM errors (for owner to debug why AI isn't answering)
+app.get('/admin/llm-debug', adminAuth, (req, res) => {
+  try {
+    res.json({
+      llm_logs: (_db.llmLogs || []).slice(-20).reverse(),
+      groq_key_present: !!process.env.GROQ_API_KEY,
+      groq_model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      halat_system_prompt: (getClientById('halat') || {}).system_prompt || '(افتراضي)'
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // SECURITY: check halat token status without leaking it
 app.get('/admin/halat-token-status', adminAuth, (req, res) => {
   try {
