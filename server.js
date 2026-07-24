@@ -261,7 +261,7 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
   markInbound(client.id, from);
   console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"${hasImage ? ' [صورة]' : ''}${buttonId ? ' [زر:' + buttonId + ']' : ''}`);
   // MAINTENANCE MODE (mute) — temporary auto-reply, no Q&A/LLM
-  if (process.env.MAINTENANCE_MODE === 'on') {
+  if (_db.maintenance === true) {
     const info = '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa';
     return sendText(client, from, info);
   }
@@ -540,6 +540,16 @@ app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// SECURITY: toggle maintenance mode (store in _db, no env restart needed)
+app.post('/admin/maintenance', adminAuth, async (req, res) => {
+  const { on } = req.body;
+  try {
+    _db.maintenance = (on === '1' || on === 'true' || on === true);
+    save(_db);
+    res.redirect('/admin');
+  } catch (e) { res.status(500).send('خطأ: ' + e.message); }
+});
+
 // SECURITY: strip any leaked owner_email / old staff email from stored maintenance_msg in Supabase
 app.get('/admin/fix-maintenance', adminAuth, async (req, res) => {
   try {
@@ -568,7 +578,10 @@ function loginHtml() {
 function adminHtml() {
   const clients = _db.clients.map(c => '<tr><td>'+c.id+'</td><td>'+c.name+'</td><td>'+c.phone_id+'</td><td>'+(c.store ? c.store.platform : '-')+'</td></tr>').join('') || '<tr><td colspan="4">لا يوجد</td></tr>';
   const users = _db.users.map(u => '<tr><td>'+u.username+'</td><td>'+u.client_id+'</td><td>'+u.role+'</td></tr>').join('') || '<tr><td colspan="3">لا يوجد</td></tr>';
+  const mOn = _db.maintenance === true;
+  const mBadge = mOn ? '<span style=\"background:#dc3545;color:#fff;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700\">تعمل الآن ⛔</span>' : '<span style=\"background:#25D366;color:#04210f;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700\">مطفأة ✅</span>';
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>RX WA — إدارة</title><link rel="stylesheet" href="/admin.css"></head><body><header class="topbar"><h1>💬 RX WA — لوحة الإدارة</h1><div class="sub">منصة واتساب أوتوميشن متعددة العملاء</div></header><div class="wrap">
+  <div class="card" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><b>وضع الصيانة:</b> ${mBadge}</div><div style="display:flex;gap:10px"><form method="POST" action="/admin/maintenance"><input type="hidden" name="on" value="1"><button class="danger">تشغيل الصيانة</button></form><form method="POST" action="/admin/maintenance"><input type="hidden" name="on" value="0"><button style="background:#25D366;color:#04210f">إطفاء الصيانة</button></form></div></div>
   <div class="card"><h2 class="sec"><span class="num">١</span> إضافة عميل جديد (ربط رقم واتساب + ذكاء اصطناعي)</h2><form method="POST" action="/admin/client"><div class="row"><input name="id" placeholder="معرف العميل (مثل store_a)" required><input name="name" placeholder="اسم المتجر" required></div><div class="row"><input name="phone_id" placeholder="Phone ID من ميتا" required><input name="wa_token" placeholder="WABA Token من ميتا" required></div><textarea name="system_prompt" placeholder="تعليمات الذكاء الاصطناعي (كيف يرد الموظف الآلي)" rows="3"></textarea><button>إضافة عميل</button></form></div>
   <div class="card"><h2 class="sec"><span class="num">٢</span> ربط متجر العميل (زد / سلة / شوبيفاي)</h2><form method="POST" action="/admin/store"><div class="row"><input name="client_id" placeholder="معرف العميل" required><select name="platform"><option value="zid">زد</option><option value="salla">سلة</option><option value="shopify">شوبيفاي</option><option value="generic">موقع خاص</option></select></div><div class="row"><input name="key" placeholder="Merchant Key / Secret"><input name="store_id" placeholder="Store ID / Domain"></div><button>ربط المتجر</button></form></div>
   <div class="card"><h2 class="sec"><span class="num">٣</span> بث جماعي (قالب معتمد)</h2><form method="POST" action="/admin/broadcast"><div class="row"><input name="client_id" placeholder="معرف العميل" required><input name="template" placeholder="اسم القالب المعتمد" required></div><textarea name="recipients" placeholder="أرقام العملاء (رقم واحد بكل سطر)" rows="4"></textarea><button>إرسال البث</button></form></div>
