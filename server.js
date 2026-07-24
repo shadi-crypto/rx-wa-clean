@@ -217,9 +217,10 @@ async function sendMsg(client, to, payload, opts) {
   if (!opts.force && opts.type !== 'template' && !within24h(client.id, to)) { console.log(`[24h] خارج النافذة -> ${to}`); _db.lastReplies = _db.lastReplies || []; _db.lastReplies.push({ at: Date.now(), client: client.id, to, text: '⛔ [ممنوع: خارج نافذة 24h] ' + ((payload.text && payload.text.body) || '') }); if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30); try { save(_db); } catch (e) {}; return { blocked24h: true }; }
   if (opts.type === 'text') logMsg(client.id, to, 'out', payload);
   else logMsg(client.id, to, 'out', '[رسالة ' + opts.type + ']');
-  // record last reply for owner verification
+  // RESOLVE TOKEN: prefer client.wa_token, fall back to env HALAT_WA_TOKEN (so it never drops on cold restart)
+  const effToken = (client.wa_token && client.wa_token !== 'demo') ? client.wa_token : process.env.HALAT_WA_TOKEN;
   _db.lastReplies = _db.lastReplies || [];
-  if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) {
+  if (!effToken || !client.phone_id) {
     const msg = '⚠️ [فشل الإرسال: wa_token فاضي/تجريبي أو phone_id ناقص] ' + ((payload.text && payload.text.body) || '');
     _db.lastReplies.push({ at: Date.now(), client: client.id, to, text: msg });
     if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30);
@@ -231,7 +232,7 @@ async function sendMsg(client, to, payload, opts) {
   if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30);
   try { save(_db); } catch (e) {}
   const url = `https://graph.facebook.com/${API_VERSION}/${client.phone_id}/messages`;
-  try { await axios.post(url, { messaging_product: 'whatsapp', to, ...payload }, { headers: { Authorization: `Bearer ${client.wa_token}` } }); return {}; }
+  try { await axios.post(url, { messaging_product: 'whatsapp', to, ...payload }, { headers: { Authorization: `Bearer ${effToken}` } }); return {}; }
   catch (e) { console.error('send error:', e.response && e.response.data || e.message); return { error: e.message }; }
 }
 function sendText(client, to, text, opts) { return sendMsg(client, to, { type: 'text', text: { body: text } }, Object.assign({ type: 'text' }, opts)); }
