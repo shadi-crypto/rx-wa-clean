@@ -246,18 +246,39 @@ function sendTemplate(client, to, name, lang, components) {
 function logLLM(s) { try { _db.llmLogs = _db.llmLogs || []; _db.llmLogs.push({ at: Date.now(), msg: s }); if (_db.llmLogs.length > 50) _db.llmLogs = _db.llmLogs.slice(-50); save(_db); } catch (e) {} }
 // ---------- Halat website context (real product info) ----------
 let _halatCtx = '';
+async function fetchURL(u) {
+  try {
+    const r = await axios.get(u, { timeout: 9000, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+    return r.data || '';
+  } catch (e) { return ''; }
+}
+function cleanHtml(h) {
+  return (h || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ ‌​ ﻿]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[؟?.،,]{2,}/g, '.')
+    .trim();
+}
 async function refreshHalatContext() {
   try {
-    const urls = ['https://halat.sa', 'https://halat.sa/products', 'https://halat.sa/categories'];
     let txt = '';
-    for (const u of urls) {
-      try {
-        const r = await axios.get(u, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const clean = (r.data || '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        txt += '\n' + clean.slice(0, 1500);
-      } catch (e) {}
-    }
-    if (txt) { _halatCtx = txt.slice(0, 4000); console.log('[HALAT-CTX] تم جلب سياق الموقع (' + _halatCtx.length + ' حرف)'); }
+    // 1) Try Zid public product API (clean JSON)
+    try {
+      const j = await axios.get('https://api.zid.sa/v1/store/1596689/products?page=1&per_page=20', { timeout: 9000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const prods = (j.data && j.data.data && j.data.data.products) || [];
+      if (prods.length) {
+        txt += '\nقائمة منتجات هالات الحقيقية:\n' + prods.map(p => `- ${p.name} | السعر: ${p.price} ريال | الرابط: ${p.url || ''}`).join('\n');
+      }
+    } catch (e) {}
+    // 2) Fallback: scrape homepage + products page (cleaned)
+    const home = cleanHtml(await fetchURL('https://halat.sa'));
+    const prod = cleanHtml(await fetchURL('https://halat.sa/products'));
+    txt += '\n' + home.slice(0, 1200) + '\n' + prod.slice(0, 1200);
+    if (txt.trim()) { _halatCtx = txt.replace(/\s+/g, ' ').slice(0, 4000); console.log('[HALAT-CTX] تم جلب سياق الموقع (' + _halatCtx.length + ' حرف)'); }
   } catch (e) { console.log('[HALAT-CTX] خطأ:', e.message); }
 }
 // refresh on boot + every 30 min
