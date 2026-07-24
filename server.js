@@ -244,12 +244,33 @@ function sendTemplate(client, to, name, lang, components) {
 
 // ---------- LLM (Groq) per client ----------
 function logLLM(s) { try { _db.llmLogs = _db.llmLogs || []; _db.llmLogs.push({ at: Date.now(), msg: s }); if (_db.llmLogs.length > 50) _db.llmLogs = _db.llmLogs.slice(-50); save(_db); } catch (e) {} }
+// ---------- Halat website context (real product info) ----------
+let _halatCtx = '';
+async function refreshHalatContext() {
+  try {
+    const urls = ['https://halat.sa', 'https://halat.sa/products', 'https://halat.sa/categories'];
+    let txt = '';
+    for (const u of urls) {
+      try {
+        const r = await axios.get(u, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const clean = (r.data || '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        txt += '\n' + clean.slice(0, 1500);
+      } catch (e) {}
+    }
+    if (txt) { _halatCtx = txt.slice(0, 4000); console.log('[HALAT-CTX] تم جلب سياق الموقع (' + _halatCtx.length + ' حرف)'); }
+  } catch (e) { console.log('[HALAT-CTX] خطأ:', e.message); }
+}
+// refresh on boot + every 30 min
+refreshHalatContext();
+setInterval(refreshHalatContext, 30 * 60 * 1000);
+
 async function askLLM(client, text) {
   if (!GROQ_KEY) { console.log('[LLM] ما فيه GROQ_API_KEY — تجاهل'); logLLM('no GROQ_KEY'); return null; }
+  const ctx = _halatCtx ? '\n--- معلومات متجر هالات الحقيقية من موقعه (استخدمها للرد بصدق): ---\n' + _halatCtx + '\n--- نهاية معلومات الموقع ---' : '';
   const prompt = (client.system_prompt || 'أنت موظف خدمة عملاء مفيد. أجب بالعربية وباختصار.') + '\nالعميل يسأل: ' + text + '\nرد باختصار. لو ما تعرف الجواب قل "موظف".';
   try {
     const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-      { model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: client.system_prompt || 'أنت موظف خدمة عملاء' }, { role: 'user', content: text }], temperature: 0.4, max_tokens: 300 },
+      { model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: (client.system_prompt || 'أنت موظف خدمة عملاء') + ctx }, { role: 'user', content: text }], temperature: 0.4, max_tokens: 300 },
       { headers: { Authorization: `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' } });
     const ans = r.data.choices[0].message.content.trim();
     logLLM('OK: ' + ans.slice(0, 80));
@@ -595,6 +616,12 @@ app.post('/admin/client/prompt', adminAuth, async (req, res) => {
     save(_db);
     res.redirect('/admin');
   } catch (e) { res.status(500).send('خطأ: ' + e.message); }
+});
+
+// SECURITY: refresh Halat website context on demand
+app.post('/admin/refresh-context', adminAuth, async (req, res) => {
+  try { await refreshHalatContext(); res.json({ ok: true, len: _halatCtx.length }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // SECURITY: check halat token status without leaking it
