@@ -310,6 +310,8 @@ app.post('/webhook', (req, res) => {
     if (sig !== expected) { console.error('[WEBHOOK] توقيع خطأ (APP_SECRET قد يكون غلط) — تجاهل التحقق مؤقتاً'); }
   }
   if (!req.body || req.body.object !== 'whatsapp_business_account') return res.sendStatus(200);
+  // RAW LOG: capture every inbound webhook payload for diagnosis (owner-only view)
+  try { _db.rawHooks = _db.rawHooks || []; _db.rawHooks.push({ at: Date.now(), body: req.body }); if (_db.rawHooks.length > 20) _db.rawHooks = _db.rawHooks.slice(-20); save(_db); } catch (e) {}
   (async () => {
     for (const entry of (req.body.entry || [])) for (const change of (entry.changes || [])) {
       const value = change.value || {}; const phoneId = value.metadata && value.metadata.phone_number_id; const client = getClientByPhone(phoneId); if (!client) continue;
@@ -545,6 +547,14 @@ app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// SECURITY: show raw inbound webhooks (for owner to diagnose why Meta messages aren't matching)
+app.get('/admin/raw-hooks', adminAuth, (req, res) => {
+  try {
+    const r = (_db.rawHooks || []).slice(-10).reverse();
+    res.json({ count: r.length, hooks: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // SECURITY: show last outbound replies (for owner to verify LLM is working)
 app.get('/admin/last-replies', adminAuth, (req, res) => {
   try {
