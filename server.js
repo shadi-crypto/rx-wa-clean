@@ -555,7 +555,7 @@ app.get('/admin/llm-status', adminAuth, async (req, res) => {
     if (!GROQ_KEY) return res.json({ ok:false, reason:'GROQ_API_KEY غير موجود في البيئة' });
     const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
       { model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', messages: [{ role:'system', content:'رد بكلمة واحدة: حية' }, { role:'user', content:'?' }], temperature:0, max_tokens:10 },
-      { headers: { Authorization: *** ${GROQ_KEY}`, 'Content-Type':'application/json' } });
+      { headers: { Authorization: 'Bearer ' + GROQ_KEY, 'Content-Type':'application/json' } });
     return res.json({ ok:true, model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', sample: r.data.choices[0].message.content });
   } catch (e) { return res.json({ ok:false, reason: e.message }); }
 });
