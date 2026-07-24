@@ -120,13 +120,8 @@ async function boot() {
     const c = { id: 'halat', name: 'هالات', phone_id: process.env.HALAT_PHONE_ID || 'HALATID', wa_token: process.env.HALAT_WA_TOKEN || 'demo', flow: 'qa', owner_email: process.env.HALAT_STAFF_EMAIL || '', maintenance_msg: '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa', system_prompt: 'أنت موظف خدمة عملاء في متجر هالات للحيوانات. أجب بالعربية وباختصار. لو ما تعرف قل "موظف".', store: null };
     _db.clients.push(c); await dbSaveClient(c);
   }
-  if (!_db.qa.length) {
-    try {
-      const qa = JSON.parse(fs.readFileSync(path.join(__dirname, 'qa.json'), 'utf8'));
-      _db.qa = qa.map(q => ({ client_id: q.client_id || 'halat', question: q.question, keywords: q.keywords, reply: q.reply }));
-      console.log(`[BOOT] زرع ${_db.qa.length} سؤال ✅`);
-    } catch (e) { console.log('[BOOT] تعذّر زرع qa:', e.message); }
-  }
+  // Q&A static file disabled — GROQ ONLY mode (no hardcoded replies)
+  _db.qa = [];
   if (!_db.users.find(u => u.username === 'admin')) {
     const u = { username: 'admin', client_id: 'halat', password: bcrypt.hashSync(ADMIN_PASSWORD, 10), role: 'owner', email: process.env.ALERT_EMAIL || '' };
     _db.users.push(u); await dbSaveUser(u);
@@ -262,17 +257,9 @@ async function askLLM(client, text) {
   } catch (e) { console.error('[LLM] خطأ:', e.response && e.response.data || e.message); logLLM('ERROR: ' + (e.response && JSON.stringify(e.response.data) || e.message)); return null; }
 }
 
-// ---------- Q&A ----------
-function findReply(client, text) {
-  const rows = _db.qa.filter(q => q.client_id === client.id);
-  if (!rows.length) return null;
-  const lower = text.toLowerCase();
-  for (const r of rows) { const keys = (r.keywords || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean); if (keys.some(k => lower.includes(k))) return r.reply; }
-  const fuse = new Fuse(rows, { keys: ['question', 'keywords'], threshold: 0.5 });
-  const hit = fuse.search(text); if (hit.length) return hit[0].item.reply; return null;
-}
+// ---------- Q&A (disabled: GROQ ONLY mode) ----------
 
-// ---------- handle message ----------
+// ---------- handle message (GROQ ONLY — no static replies, no menu, no Q&A) ----------
 async function handleMessage(client, from, text, hasImage, buttonId) {
   markInbound(client.id, from);
   console.log(`[ROUTE] ${client.name} <- ${from}: "${text}"${hasImage ? ' [صورة]' : ''}${buttonId ? ' [زر:' + buttonId + ']' : ''}`);
@@ -281,24 +268,13 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
     const info = '🔧 خدمة العملاء تحت الصيانة حالياً.\nالرجاء التواصل معنا عبر:\n📧 الإيميل: ' + (process.env.HALAT_STAFF_EMAIL || 'support@halat.sa') + '\n🌐 إنستقرام: @halat.sa';
     return sendText(client, from, info);
   }
+  // If customer explicitly asks for a human, alert staff (allowed exception)
   const lower = (text || '').toLowerCase();
-  if (buttonId) {
-    if (buttonId === 'btn0') return sendText(client, from, '🚚 مدة الشحن: الرياض 1-3 أيام، باقي المدن 3-5 أيام.');
-    if (buttonId === 'btn1') return sendText(client, from, '⚠️ لرفع بلاغ تلف أرسل رقم طلبك (مثلاً #1234).');
-    if (buttonId === 'btn2') { delete _db.misses[from]; _db.staffRequests[from] = true; save(_db); await alertStaff(client, from, text); return sendText(client, from, '🙋 فريقنا يتواصل معاك قريباً. أو تواصل على 966579591669.'); }
+  if (lower.includes('موظف') || lower.includes('اتصال') || lower.includes('اتصل')) {
+    _db.staffRequests[from] = true; save(_db); await alertStaff(client, from, text);
+    return sendText(client, from, '🙋 فريقنا يتواصل معاك قريباً.');
   }
-  const flow = _db.flows[from];
-  if (flow && flow.step) {
-    if (lower.includes('إلغاء') || lower.includes('موظف') || lower.includes('اتصال')) { delete _db.flows[from]; delete _db.misses[from]; save(_db); return sendText(client, from, '🙋 تم إلغاء الطلب.'); }
-    if (flow.step === 'await_order') { _db.flows[from] = { step: 'await_photo', order: text.trim() }; save(_db); return sendText(client, from, '📸 أرسل **صورة واضحة للتلف** ونرفع بلاغ التعويض.'); }
-    if (flow.step === 'await_photo') { if (!hasImage) return sendText(client, from, '📸 نحتاج صورة للتلف. أرسل صورة واضحة.'); delete _db.flows[from]; delete _db.misses[from]; save(_db); return sendText(client, from, `✅ استلمنا بلاغك (رقم الطلب: ${flow.order}). فريق هالات يراجع ويتواصل معاك خلال 24 ساعة.`); }
-  }
-  if (!text || /^(مرحبا|السلام|قائمة|السلام عليكم|start)/.test(lower)) { delete _db.misses[from]; save(_db); return sendButtons(client, from, `👋 أهلاً وسهلاً في *${client.name}*! اختر من القائمة:`, ['مدة الشحن', 'بلاغ تلف', 'موظف']); }
-  if (lower.includes('موظف') || lower.includes('اتصال')) { delete _db.misses[from]; _db.staffRequests[from] = true; save(_db); await alertStaff(client, from, text); return sendText(client, from, '🙋 فريقنا يتواصل معاك قريباً.'); }
-  if (lower.includes('تالف') || lower.includes('كسر') || lower.includes('تلف') || lower.includes('ضرر') || lower.includes('مكسور')) { _db.flows[from] = { step: 'await_order', order: '' }; delete _db.misses[from]; save(_db); return sendText(client, from, '⚠️ لرفع بلاغ تعويض، أرسل **رقم طلبك** (مثلاً #1234).'); }
-  const reply = findReply(client, text);
-  if (reply) { delete _db.misses[from]; save(_db); return sendText(client, from, reply); }
-  // LLM fallback (per-client system_prompt)
+  // GROQ ONLY: every message goes straight to the LLM
   let llm = null;
   try {
     llm = await askLLM(client, text);
@@ -307,10 +283,9 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
     console.error('[LLM] exception:', e.message);
     llm = null;
   }
-  if (llm && !llm.toLowerCase().includes('موظف')) { delete _db.misses[from]; save(_db); return sendText(client, from, llm); }
-  const miss = (_db.misses[from] || 0) + 1; _db.misses[from] = miss; save(_db);
-  if (miss >= 3) { delete _db.misses[from]; _db.staffRequests[from] = true; save(_db); await alertStaff(client, from, text); return sendText(client, from, '🙋 يبدو أن سؤالك خارج نطاق المعرفة. تواصل مباشرة مع الموظف.'); }
-  return sendText(client, from, '🤖 ما قدرت أفهم سؤالك. اكتب كلمات أوضح، أو "موظف" للتواصل المباشر.');
+  if (llm) return sendText(client, from, llm);
+  // Fallback only if Groq totally fails
+  return sendText(client, from, '🙋 عذراً، حصل خطأ مؤقت. حاول مرة ثانية أو اكتب "موظف" للتواصل المباشر.');
 }
 
 // ---------- WhatsApp webhook ----------
