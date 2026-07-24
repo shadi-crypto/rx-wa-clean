@@ -283,9 +283,33 @@ async function handleMessage(client, from, text, hasImage, buttonId) {
     console.error('[LLM] exception:', e.message);
     llm = null;
   }
-  if (llm) return sendText(client, from, llm);
+  // SCOPE GUARD: double-check the reply is about Halat pets store, not general knowledge
+  if (llm) {
+    const outOfScope = await isOutOfScope(text, llm);
+    if (outOfScope) {
+      return sendText(client, from, '🐾 أنا هنا لمساعدتك في متجر هالات للحيوانات فقط (قطط، كلاب، طيور، أسماك، وأكسسواراتها). كيف أقدر أخدمك بخصوص منتجاتنا أو طلبك؟');
+    }
+    return sendText(client, from, llm);
+  }
   // Fallback only if Groq totally fails
   return sendText(client, from, '🙋 عذراً، حصل خطأ مؤقت. حاول مرة ثانية أو اكتب "موظف" للتواصل المباشر.');
+}
+
+// SCOPE GUARD: ask Groq to judge if the reply strays outside Halat pets store domain
+async function isOutOfScope(userText, botReply) {
+  if (!GROQ_KEY) return false;
+  const judgePrompt = `أنت حكم. هل الرد التالي خارج نطاق "متجر هالات للحيوانات (قطط، كلاب، طيور، أسماك، أكسسوارات حيوانات)"؟ الرد يجب أن يكون فقط عن منتجات هالات أو خدمة العملاء (شحن، استرجاع، دفع، طلبات).
+سؤال العميل: ${userText}
+رد البوت: ${botReply}
+أجب بكلمة واحدة فقط: "نعم" (إذا خارج النطاق) أو "لا" (إذا ضمن النطاق).`;
+  try {
+    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: judgePrompt }], temperature: 0, max_tokens: 5 },
+      { headers: { Authorization: `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' } });
+    const ans = (r.data.choices[0].message.content || '').trim();
+    console.log(`[SCOPE] "${userText}" -> ${ans}`);
+    return ans.startsWith('نع');
+  } catch (e) { console.error('[SCOPE] error:', e.message); return false; }
 }
 
 // ---------- WhatsApp webhook ----------
