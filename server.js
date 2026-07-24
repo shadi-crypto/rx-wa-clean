@@ -550,6 +550,16 @@ app.get('/admin/fix-maintenance', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/admin/llm-status', adminAuth, async (req, res) => {
+  try {
+    if (!GROQ_KEY) return res.json({ ok:false, reason:'GROQ_API_KEY غير موجود في البيئة' });
+    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+      { model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', messages: [{ role:'system', content:'رد بكلمة واحدة: حية' }, { role:'user', content:'?' }], temperature:0, max_tokens:10 },
+      { headers: { Authorization: *** ${GROQ_KEY}`, 'Content-Type':'application/json' } });
+    return res.json({ ok:true, model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', sample: r.data.choices[0].message.content });
+  } catch (e) { return res.json({ ok:false, reason: e.message }); }
+});
+
 // ---------- HTML ----------
 function loginHtml() {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>RX WA — دخول</title><style>body{font-family:Tahoma,sans-serif;background:#075E54;display:flex;height:100vh;align-items:center;justify-content:center}.card{background:#fff;padding:34px;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.25);width:330px;text-align:center}.logo{font-size:40px;margin-bottom:6px}.card h2{margin:0 0 18px;color:#075E54}input{padding:12px;width:100%;margin:8px 0;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;font-size:15px}button{background:#25D366;color:#fff;border:0;padding:13px;width:100%;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}</style></head><body><div class="card"><div class="logo">💬</div><h2>RX WA</h2><form method="POST" action="/login"><input name="username" placeholder="اسم المستخدم" required><input name="password" type="password" placeholder="كلمة السر" required><button>دخول</button></form></div></body></html>`;
