@@ -217,6 +217,11 @@ async function sendMsg(client, to, payload, opts) {
   if (!opts.force && opts.type !== 'template' && !within24h(client.id, to)) { console.log(`[24h] خارج النافذة -> ${to}`); return { blocked24h: true }; }
   if (opts.type === 'text') logMsg(client.id, to, 'out', payload);
   else logMsg(client.id, to, 'out', '[رسالة ' + opts.type + ']');
+  // record last reply for owner verification
+  _db.lastReplies = _db.lastReplies || [];
+  _db.lastReplies.push({ at: Date.now(), client: client.id, to, text: (payload.text && payload.text.body) || ('[' + opts.type + ']') });
+  if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30);
+  try { save(_db); } catch (e) {}
   if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) { console.log(`[ROUTE] ${client.name} -> ${to}: ${payload}`); return {}; }
   const url = `https://graph.facebook.com/${API_VERSION}/${client.phone_id}/messages`;
   try { await axios.post(url, { messaging_product: 'whatsapp', to, ...payload }, { headers: { Authorization: `Bearer ${client.wa_token}` } }); return {}; }
@@ -540,6 +545,14 @@ app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// SECURITY: show last outbound replies (for owner to verify LLM is working)
+app.get('/admin/last-replies', adminAuth, (req, res) => {
+  try {
+    const r = (_db.lastReplies || []).slice(-15).reverse();
+    res.json({ count: r.length, replies: r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // SECURITY: toggle maintenance mode (store in _db, no env restart needed)
 app.post('/admin/maintenance', adminAuth, async (req, res) => {
   const { on } = req.body;
