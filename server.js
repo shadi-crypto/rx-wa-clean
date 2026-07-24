@@ -552,6 +552,21 @@ app.get('/admin/llm-debug', adminAuth, (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// SECURITY: owner can update a client's system_prompt (controls how Groq replies)
+app.post('/admin/client/prompt', adminAuth, async (req, res) => {
+  const { id, system_prompt } = req.body;
+  if (!id || !system_prompt) return res.status(400).send('missing');
+  try {
+    const c = getClientById(id);
+    if (!c) return res.status(404).send('لا يوجد');
+    c.system_prompt = system_prompt;
+    if (_sbOK) { await dbSaveClient(c); }
+    const i = _db.clients.findIndex(x => x.id === id); if (i >= 0) _db.clients[i] = c;
+    save(_db);
+    res.redirect('/admin');
+  } catch (e) { res.status(500).send('خطأ: ' + e.message); }
+});
+
 // SECURITY: check halat token status without leaking it
 app.get('/admin/halat-token-status', adminAuth, (req, res) => {
   try {
@@ -624,6 +639,8 @@ function loginHtml() {
 function adminHtml() {
   const clients = _db.clients.map(c => '<tr><td>'+c.id+'</td><td>'+c.name+'</td><td>'+c.phone_id+'</td><td>'+(c.store ? c.store.platform : '-')+'</td></tr>').join('') || '<tr><td colspan="4">لا يوجد</td></tr>';
   const users = _db.users.map(u => '<tr><td>'+u.username+'</td><td>'+u.client_id+'</td><td>'+u.role+'</td></tr>').join('') || '<tr><td colspan="3">لا يوجد</td></tr>';
+  const halat = getClientById('halat') || {};
+  const halatPrompt = halat.system_prompt || '';
   const mOn = _db.maintenance === true;
   const mBadge = mOn ? '<span style=\"background:#dc3545;color:#fff;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700\">تعمل الآن ⛔</span>' : '<span style=\"background:#25D366;color:#04210f;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:700\">مطفأة ✅</span>';
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>RX WA — إدارة</title><link rel="stylesheet" href="/admin.css"></head><body><header class="topbar"><h1>💬 RX WA — لوحة الإدارة</h1><div class="sub">منصة واتساب أوتوميشن متعددة العملاء</div></header><div class="wrap">
@@ -632,7 +649,8 @@ function adminHtml() {
   <div class="card"><h2 class="sec"><span class="num">٢</span> ربط متجر العميل (زد / سلة / شوبيفاي)</h2><form method="POST" action="/admin/store"><div class="row"><input name="client_id" placeholder="معرف العميل" required><select name="platform"><option value="zid">زد</option><option value="salla">سلة</option><option value="shopify">شوبيفاي</option><option value="generic">موقع خاص</option></select></div><div class="row"><input name="key" placeholder="Merchant Key / Secret"><input name="store_id" placeholder="Store ID / Domain"></div><button>ربط المتجر</button></form></div>
   <div class="card"><h2 class="sec"><span class="num">٣</span> بث جماعي (قالب معتمد)</h2><form method="POST" action="/admin/broadcast"><div class="row"><input name="client_id" placeholder="معرف العميل" required><input name="template" placeholder="اسم القالب المعتمد" required></div><textarea name="recipients" placeholder="أرقام العملاء (رقم واحد بكل سطر)" rows="4"></textarea><button>إرسال البث</button></form></div>
   <div class="card"><h2 class="sec"><span class="num">٤</span> المستخدمون وكلمات السر</h2><form method="POST" action="/admin/password"><div class="row"><input name="old_p" type="password" placeholder="كلمة السر القديمة" required><input name="new_p" type="password" placeholder="كلمة سر جديدة (8+ حروف)" required></div><button>تغيير باس وورد المالك</button></form><hr><form method="POST" action="/admin/client/creds"><div class="row"><input name="client_id" placeholder="معرف العميل" required><input name="username" placeholder="اسم مستخدم الموظف" required><input name="password" type="password" placeholder="باس وورد (8+)"></div><button>إضافة/تحديث دخول موظف العميل</button></form><div class="info">كل عميل له دخول منفصل ومشفّر ومعزول عن باقي العملاء.</div><table><tr><th>مستخدم</th><th>عميل</th><th>دور</th></tr>${users}</table></div>
-  <div class="card"><h2 class="sec"><span class="num">٥</span> العملاء والربط</h2><form method="POST" action="/admin/client/unlink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button class="danger">فك الربط من التطبيق (يوقف البوت ويبقي المحادثات)</button></div></form><form method="POST" action="/admin/client/relink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button class="export">إعادة الربط (يرجّع التوكن ويشغّل البوت)</button></div></form><div class="info" style="margin-top:12px">تصدير محادثات العميل قبل فك الربط:</div><a class="export" href="/admin/client/export?id=halat"><button class="export">⬇️ تحميل محادثات halat (CSV)</button></a><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div></div></body></html>`;
+  <div class="card"><h2 class="sec"><span class="num">٥</span> العملاء والربط</h2><form method="POST" action="/admin/client/unlink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button class="danger">فك الربط من التطبيق (يوقف البوت ويبقي المحادثات)</button></div></form><form method="POST" action="/admin/client/relink"><div class="row"><input name="id" placeholder="معرف العميل (مثل halat)" required><button class="export">إعادة الربط (يرجّع التوكن ويشغّل البوت)</button></div></form><div class="info" style="margin-top:12px">تصدير محادثات العميل قبل فك الربط:</div><a class="export" href="/admin/client/export?id=halat"><button class="export">⬇️ تحميل محادثات halat (CSV)</button></a><table><tr><th>معرف</th><th>اسم</th><th>Phone ID</th><th>متجر</th></tr>${clients}</table></div>
+  <div class="card"><h2 class="sec"><span class="num">٦</span> تعليمات الذكاء الاصطناعي (system_prompt)</h2><form method="POST" action="/admin/client/prompt"><input type="hidden" name="id" value="halat"><textarea name="system_prompt" rows="5" placeholder="اكتب تعليمات البوت هنا">${halatPrompt}</textarea><button>حفظ التعليمات</button></form><div class="info">البوت يستخدم Groq فقط. لا تكتب "لو ما تعرف قل موظف" لأنه بيرد "موظف" دائماً.</div></div></body></html>`;
 }
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
