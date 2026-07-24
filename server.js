@@ -214,15 +214,22 @@ function save() {}
 async function sendMsg(client, to, payload, opts) {
   opts = opts || {};
   // Replies from the Inbox (manual, agent-sent) must always go through — never block on 24h.
-  if (!opts.force && opts.type !== 'template' && !within24h(client.id, to)) { console.log(`[24h] خارج النافذة -> ${to}`); return { blocked24h: true }; }
+  if (!opts.force && opts.type !== 'template' && !within24h(client.id, to)) { console.log(`[24h] خارج النافذة -> ${to}`); _db.lastReplies = _db.lastReplies || []; _db.lastReplies.push({ at: Date.now(), client: client.id, to, text: '⛔ [ممنوع: خارج نافذة 24h] ' + ((payload.text && payload.text.body) || '') }); if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30); try { save(_db); } catch (e) {}; return { blocked24h: true }; }
   if (opts.type === 'text') logMsg(client.id, to, 'out', payload);
   else logMsg(client.id, to, 'out', '[رسالة ' + opts.type + ']');
   // record last reply for owner verification
   _db.lastReplies = _db.lastReplies || [];
+  if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) {
+    const msg = '⚠️ [فشل الإرسال: wa_token فاضي/تجريبي أو phone_id ناقص] ' + ((payload.text && payload.text.body) || '');
+    _db.lastReplies.push({ at: Date.now(), client: client.id, to, text: msg });
+    if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30);
+    try { save(_db); } catch (e) {}
+    console.log(`[SEND FAIL] ${client.name} -> ${to}: ${msg}`);
+    return { error: 'no_token' };
+  }
   _db.lastReplies.push({ at: Date.now(), client: client.id, to, text: (payload.text && payload.text.body) || ('[' + opts.type + ']') });
   if (_db.lastReplies.length > 30) _db.lastReplies = _db.lastReplies.slice(-30);
   try { save(_db); } catch (e) {}
-  if (!client.wa_token || client.wa_token === 'demo' || !client.phone_id) { console.log(`[ROUTE] ${client.name} -> ${to}: ${payload}`); return {}; }
   const url = `https://graph.facebook.com/${API_VERSION}/${client.phone_id}/messages`;
   try { await axios.post(url, { messaging_product: 'whatsapp', to, ...payload }, { headers: { Authorization: `Bearer ${client.wa_token}` } }); return {}; }
   catch (e) { console.error('send error:', e.response && e.response.data || e.message); return { error: e.message }; }
@@ -547,6 +554,24 @@ app.get('/admin/reencrypt', adminAuth, async (req, res) => {
   try { await dbLoad(); const errs = []; for (const c of _db.clients) { try { await dbSaveClient(c); } catch (e) { errs.push(c.id + ': ' + (e.response && JSON.stringify(e.response.data) || e.message)); } } res.json({ ok: errs.length === 0, reencrypted: _db.clients.length, errors: errs }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// SECURITY: check halat token status without leaking it
+app.get('/admin/halat-token-status', adminAuth, (req, res) => {
+  try {
+    const envTok = process.env.HALAT_WA_TOKEN || '';
+    const c = getClientById('halat');
+    const clientTok = c ? c.wa_token : '(no client)';
+    res.json({
+      env_token_present: !!envTok,
+      env_token_len: envTok.length,
+      env_token_preview: envTok ? envTok.slice(0, 6) + '...' : null,
+      client_token_present: !!(clientTok && clientTok !== 'demo'),
+      client_token_len: clientTok ? clientTok.length : 0,
+      phone_id: c ? c.phone_id : null,
+      note: (!envTok || envTok === 'demo') ? 'HALAT_WA_TOKEN مفقود/تجريبي على Render → البوت يولد الرد بس ما يرسله' : 'التوكن موجود'
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // SECURITY: show raw inbound webhooks (for owner to diagnose why Meta messages aren't matching)
 app.get('/admin/raw-hooks', adminAuth, (req, res) => {
   try {
